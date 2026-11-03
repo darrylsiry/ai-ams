@@ -1,0 +1,28 @@
+# UAT sandbox: a disposable copy of the whole stack, isolated from production and from the everyday
+# local stack (project siryous-ams, ports 3200 and 5433). Used only by scripts/uat.sh, always with
+# its own project name:
+#
+#   docker compose -p siryous-ams-uat -f docker-compose.yml -f uat/docker-compose.uat.yml up -d --build
+#
+# Own project name  -> own containers, network and database volume, wiped with `down -v` after every run.
+# Own port (3950)   -> on 127.0.0.1 only; the database has no host port at all.
+# Sign-in on        -> BASIC_AUTH_USERS turns the gate on, so the sign-in page is tested too. Every
+#                      password and token here is sandbox-only and protects nothing real.
+#                      uatnew and autoprov have logins but no seeded profile (new-hire flows).
+# AI off            -> no ANTHROPIC_API_KEY, so email classification is the keyword rules and a run
+#                      never calls an outside service. AGENT_REPORTS_DIR points nowhere.
+services:
+  db:
+    ports: !reset []
+  web:
+    ports: !override ["127.0.0.1:${UAT_PORT:-3950}:3000"]
+    environment:
+      SEED_ON_EMPTY: "1"
+      ANTHROPIC_API_KEY: ""
+      INBOUND_EMAIL_TOKEN: "uat-inbound-token"
+      INBOUND_EMAIL_DOMAIN: "inbox.siryous.local"
+      CRON_TOKEN: "uat-cron-token"
+      SESSION_SECRET: "uat-sandbox-session-secret-not-for-production"
+      AGENT_REPORTS_DIR: "/nonexistent"
+      DISPLAY_TZ: "America/New_York"
+      BASIC_AUTH_USERS: "admin:uat-sb-admin,choll:uat-sb-choll,mrivera:uat-sb-mrivera,lmorgan:uat-sb-lmorgan,kowens:uat-sb-kowens,rcallahan:uat-sb-rcallahan,uatnew:uat-sb-uatnew,autoprov:uat-sb-autoprov"

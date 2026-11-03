@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>UX-037 — Save the client the picker shows</title>
+<style>
+  body{font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:24px}
+  h1{font-size:18px;margin:0 0 4px} p.lead{color:#475569;margin:0 0 20px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .col h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:0 0 8px}
+  .card{background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.04);padding:16px}
+  .crumb{font-size:12px;color:#64748b} .title{font-size:20px;font-weight:600;margin:2px 0 14px}
+  label{display:block;font-size:12px;font-weight:500;color:#475569;margin-bottom:4px}
+  .in{border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;background:#fff;font-size:14px;width:100%;box-sizing:border-box}
+  .in.dis{background:#f1f5f9;color:#94a3b8}
+  .row{display:flex;gap:8px;align-items:flex-end;margin-bottom:14px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .full{grid-column:1/-1}
+  .btn{display:inline-block;border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:6px 12px;font-weight:500;color:#334155;white-space:nowrap}
+  .pri{background:#4f46e5;color:#fff;border-color:#4f46e5}
+  .flash{border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:14px}
+  .ok{background:#ecfdf5;color:#065f46;box-shadow:inset 0 0 0 1px #a7f3d0}
+  .bad{border:2px dashed #e11d48;border-radius:8px;padding:8px;margin-top:12px;font-size:13px;color:#9f1239;background:#fff1f2}
+  .linked{display:flex;align-items:center;gap:10px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:10px 12px;margin-bottom:14px}
+  .linked b{font-size:15px} .code{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#475569}
+  .linked a{margin-left:auto;color:#4f46e5;font-size:13px;text-decoration:none}
+  .note{font-size:11px;color:#64748b;margin-top:4px}
+  .mark{color:#4f46e5;font-weight:700}
+</style></head><body>
+<h1>UX-037 — The client in the picker is the client that gets saved</h1>
+<p class="lead">New task: today the picker sits in its own "Load policies" form, so a task can be saved with no client, or with the client loaded earlier.</p>
+<div class="cols">
+  <div class="col"><h2>Before</h2>
+    <div class="card">
+      <div class="crumb">Tasks</div><div class="title">New task</div>
+      <div class="row">
+        <div style="flex:1"><label>Client</label><div class="in">Brown Electric</div></div>
+        <span class="btn">Load policies</span>
+      </div>
+      <div class="grid">
+        <div class="full"><label>Type</label><div class="in">Follow-up</div></div>
+        <div class="full"><label>Subject</label><div class="in">Call back re: adding new box truck</div></div>
+        <div><label>Policy</label><div class="in dis">Pick a client first</div></div>
+        <div><label>Owner</label><div class="in">Marisol Rivera</div></div>
+        <div class="full"><span class="btn pri">Create task</span></div>
+      </div>
+      <div class="bad">After "Create task": <b>Task created</b>, but client = none, policy = none. Brown Electric was never loaded, because "Load policies" wasn't clicked.</div>
+    </div>
+  </div>
+  <div class="col"><h2>After</h2>
+    <div class="card">
+      <div class="crumb">Tasks</div><div class="title">New task</div>
+      <div class="linked"><span class="mark">◀</span><span>Linked to <b>Brown Electric</b> <span class="code">BROWNE-0231 · Raleigh, NC</span></span><a href="#">Change client</a></div>
+      <div class="grid">
+        <div class="full"><label>Type</label><div class="in">Follow-up</div></div>
+        <div class="full"><label>Subject</label><div class="in">Call back re: adding new box truck</div></div>
+        <div><label>Policy <span class="mark">◀</span></label><div class="in">BEA-1123 · Commercial auto</div><div class="note">Loaded as soon as the client was picked</div></div>
+        <div><label>Owner</label><div class="in">Marisol Rivera</div></div>
+        <div class="full"><span class="btn pri">Create task</span></div>
+      </div>
+      <div class="flash ok" style="margin-top:12px">Task created for Brown Electric <span class="mark">◀</span></div>
+      <div class="note">Picking a client submits the lookup right away. Once loaded, the client is a read-only line; "Change client" clears it. Record payment works the same way: "Payment from Brown Electric · Change client".</div>
+    </div>
+  </div>
+</div>
+</body></html>

@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ams",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd \"/Users/djsiry/GitHub/AI AMS/web\" && npm run dev"
+      ],
+      "port": 3200
+    },
+    {
+      "name": "ams-signin",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd \"/Users/djsiry/GitHub/AI AMS/web\" && BASIC_AUTH_USERS=mrivera:demo-pass-1,choll:demo-pass-2,admin:demo-pass-3 npx next dev --port 3201"
+      ],
+      "port": 3201
+    }
+  ]
+}

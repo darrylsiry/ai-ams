@@ -1,0 +1,45 @@
+# siryous AMS on Fly.io: one public app behind the sign-in page (BASIC_AUTH_USERS secret) and one
+# Managed Postgres database. DATABASE_URL is a secret set by `fly mpg attach` (scripts/fly-deploy.sh).
+app = "siryous-ams"
+primary_region = "iad"
+
+[env]
+  # This deployment's public names, canonical first: same-origin checks on posts accept these and
+  # nothing else, and links in emails and PDFs use them. List a custom domain here when you add one
+  # (fly certs add ams.example.com -a siryous-ams). scripts/fly-deploy.sh overrides it for another app name.
+  PUBLIC_BASE_URL = "https://siryous-ams.fly.dev"
+  # The agency's working day: due dates, "today" and overdue counts follow this zone.
+  DISPLAY_TZ = "America/New_York"
+  # Forwarded emails arrive at <alias>@INBOUND_EMAIL_DOMAIN (see docs/INBOUND_EMAIL.md).
+  INBOUND_EMAIL_DOMAIN = "amsinbox.siryous.app"
+  # "1" fills an empty database with the demo agency (history from 1 January 2026) on boot.
+  # Off (SEC-021): a new or restored database must not get demo data. Set to "1" only to rebuild a demo.
+  # Once an email provider is connected, also set INBOUND_AUTHSERV_ID (docs/INBOUND_EMAIL.md). Until then no sender counts as verified.
+  SEED_ON_EMPTY = "0"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # One machine that sleeps when idle. Daily automation (renewal tasks, follow-ups, reminders) runs
+  # on the first page view of the day, or on schedule through POST /api/cron/daily (CRON_TOKEN).
+  # Inbound email wakes the machine, so a forwarded email is never lost while it sleeps.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 80
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/live"         # liveness only; /api/health also checks the database
+    timeout = "5s"
+
+[[vm]]
+  memory = "1gb"               # the first-boot seed builds about 30k rows in memory
+  cpu_kind = "shared"
+  cpus = 1

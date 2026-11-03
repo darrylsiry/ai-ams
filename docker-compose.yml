@@ -1,0 +1,35 @@
+# Local stack. Database only:  docker compose up -d db   then  cd web && npm run dev  (http://localhost:3200)
+# Everything in containers:    docker compose up --build  (http://localhost:3200)
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ams
+      POSTGRES_PASSWORD: ams
+      POSTGRES_DB: ams
+    ports: ["127.0.0.1:5433:5432"]   # 5433: leaves 5432 free for other local stacks; localhost only
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ams"]
+      interval: 2s
+      retries: 30
+
+  web:
+    build: ./web
+    environment:
+      DATABASE_URL: postgresql://ams:ams@db:5432/ams
+      SEED_ON_EMPTY: "1"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      INBOUND_EMAIL_TOKEN: ${INBOUND_EMAIL_TOKEN:-local-inbound-token}
+      INBOUND_EMAIL_DOMAIN: ${INBOUND_EMAIL_DOMAIN:-inbox.siryous.local}
+      INBOUND_AUTHSERV_ID: ${INBOUND_AUTHSERV_ID:-test.local}
+      DISPLAY_TZ: ${DISPLAY_TZ:-America/New_York}
+      # A production build refuses to run without logins. These protect only this local stack.
+      BASIC_AUTH_USERS: ${BASIC_AUTH_USERS:-admin:local-admin,mrivera:local-mrivera}
+    ports: ["127.0.0.1:3200:3000"]
+    depends_on:
+      db: { condition: service_healthy }
+
+volumes:
+  pgdata:

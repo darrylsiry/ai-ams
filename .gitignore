@@ -1,0 +1,27 @@
+# secrets and local env
+.env
+.env.*
+!.env.example
+web/.env*
+!web/.env.example
+.fly-credentials
+
+# build output and dependencies
+node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts
+
+# tooling
+.DS_Store
+npm-debug.log*
+.claude/settings.local.json
+
+# review agents: per-run snapshots, state and logs; the deploy-time copy of their reports
+.review/
+web/agent-reports/*
+!web/agent-reports/.gitkeep
+
+# user-acceptance tests
+uat/node_modules/
+uat/.work/
