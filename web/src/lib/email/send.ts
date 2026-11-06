@@ -46,3 +46,36 @@ export async function sendEmail(m: OutboundEmail): Promise<string> {
     transport.close();
   }
 }
+
+export type Notice = { to: string; replyTo?: { name: string; address: string }; subject: string; text: string };
+export type NoticeResult = { sent: true; id: string } | { sent: false; reason: string };
+
+/** Who the app's own notices come from: MAIL_FROM, or the app at the inbound domain. */
+export function noticeSender(env: Record<string, string | undefined> = process.env): string {
+  return env.MAIL_FROM?.trim() || `siryous AMS <access@${env.INBOUND_EMAIL_DOMAIN?.trim() || "localhost"}>`;
+}
+
+type Transport = { sendMail(m: Record<string, unknown>): Promise<{ messageId: string; rejected?: unknown[] }>; close?(): void };
+
+/**
+ * A notice from the app itself, such as an access request to the owner. Never throws: the caller has
+ * already kept what matters, and only records whether this went out. The reason never carries the
+ * SMTP password, and the timeouts keep a public form from waiting long on a dead server.
+ */
+export async function sendNotice(n: Notice, env: Record<string, string | undefined> = process.env, open: (o: Record<string, unknown>) => Transport = (o) => nodemailer.createTransport(o as Parameters<typeof nodemailer.createTransport>[0]) as unknown as Transport): Promise<NoticeResult> {
+  const url = env.SMTP_URL?.trim();
+  if (!url) return { sent: false, reason: "Email isn't set up: SMTP_URL is not configured" };
+  let transport: Transport | undefined;
+  try {
+    const local = ["localhost", "127.0.0.1"].includes(new URL(url).hostname);
+    transport = open({ url, requireTLS: !local, connectionTimeout: 8_000, greetingTimeout: 8_000, socketTimeout: 15_000 });
+    const info = await transport.sendMail({ from: noticeSender(env), to: n.to, replyTo: n.replyTo, subject: n.subject, text: n.text, disableFileAccess: true, disableUrlAccess: true });
+    if (info.rejected?.length) return { sent: false, reason: "The mail server refused the address" };
+    return { sent: true, id: info.messageId };
+  } catch (err) {
+    return { sent: false, reason: String((err as Error).message ?? err).replace(/\/\/[^@\s/]+@/g, "//***@").slice(0, 200) };
+  } finally {
+    transport?.close?.();
+  }
+}
+

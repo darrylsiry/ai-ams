@@ -1,3 +1,5 @@
+import { listAccessRequests } from "@/lib/access-request-store";
+import { mailtoHref } from "@/lib/access-requests";
 import { Pager } from "@/components/pager";
 import { pageOf, paging } from "@/lib/paging";
 import { qs } from "@/lib/url";
@@ -19,7 +21,7 @@ export default async function UsersReport({ searchParams }: { searchParams: Prom
   const sp = await searchParams;
   const r = rangeFrom(sp);
   const username = sp.user || undefined;
-  const [users, daily, events, actions] = await Promise.all([userSummary(r), signinDaily(r), signinEvents(r, username), username ? auditByUser(r, username) : Promise.resolve([])]);
+  const [users, daily, events, actions, requests] = await Promise.all([userSummary(r), signinDaily(r), signinEvents(r, username), username ? auditByUser(r, username) : Promise.resolve([]), username ? Promise.resolve([]) : listAccessRequests()]);
   const who = users.find((u) => u.username === username);
   const atEvents = paging(sp.page_events, events.length);
   const atActions = paging(sp.page_actions, actions.length);
@@ -33,6 +35,12 @@ export default async function UsersReport({ searchParams }: { searchParams: Prom
         <Stat label="People active" value={users.filter((u) => u.signins).length} sub={`of ${users.filter((u) => u.active).length} active users`} />
         <Stat label="Never signed in (in range)" value={users.filter((u) => u.active && !u.signins).length} />
       </div>
+      {!username && <Card title={`Access requests · ${requests.length}${requests.length === 50 ? " newest" : ""}`} className="mb-5" action={<span className="text-slate-500">from the sign-in page&apos;s Request access link</span>}>
+        <Table head={["When", "Name", "Email", "Company", "Address", "Emailed to you"]} empty="No requests yet. The sign-in page links to the request form.">
+          {requests.map((q) => <tr key={q.id}><td className={`${cls.td} whitespace-nowrap text-xs`}>{whenShort(q.created_at)}</td><td className={`${cls.td} font-medium`}>{q.name}</td><td className={cls.td}><a href={mailtoHref(q.email)} className={cls.link}>{q.email}</a></td><td className={cls.td}>{q.company || "—"}</td><td className={`${cls.td} text-xs`}>{q.ip ?? "—"}</td>
+            <td className={`${cls.td} text-xs`}>{q.emailed_at ? <Pill tone="green">sent</Pill> : <span className="text-rose-700" title={q.email_error ?? ""}>not sent{q.email_error ? `: ${q.email_error.slice(0, 60)}${q.email_error.length > 60 ? "…" : ""}` : ""}</span>}</td></tr>)}
+        </Table>
+      </Card>}
       {!username && <>
         <Card title="People signed in per day" pad className="mb-5"><Bars ariaLabel="Distinct people signed in per day" data={daily.map((d) => ({ label: d.day.slice(5), value: d.users, tip: `${d.day}: ${d.users} people, ${d.signins} sign-ins, ${d.failures} failed` }))} /></Card>
         <Card title="By person" className="mb-5">

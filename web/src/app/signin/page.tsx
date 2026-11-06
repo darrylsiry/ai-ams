@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { loadUsers } from "@/lib/basic-auth";
 import { safeNext, signInAction } from "./actions";
@@ -33,7 +34,8 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
           <button className="mt-6 w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">Sign in</button>
         </form>
-        <p className="mt-4 text-center text-xs text-slate-400">Logins are issued per person by your administrator.</p>
+        <p className="mt-4 text-center text-sm text-slate-300">Don&apos;t have a login? <Link href="/request-access" className="font-medium text-indigo-300 hover:text-indigo-200 hover:underline">Request access</Link></p>
+        <p className="mt-2 text-center text-xs text-slate-400">Logins are issued per person by your administrator.</p>
       </div>
     </main>
   );

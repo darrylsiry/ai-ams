@@ -76,8 +76,8 @@ test("SEC-013: five failures in a minute, then refused; a success or a minute cl
 });
 
 test("SEC-014: public paths match exactly", () => {
-  for (const p of ["/quote", "/signin", "/signout", "/api/leads", "/api/live", "/api/inbound/email", "/api/cron/daily"]) assert.ok(isPublicPath(p), p);
-  for (const p of ["/quotes", "/quotesx", "/signin-help", "/signout2", "/api/leadsx", "/api/inboundx", "/api/cronjobs", "/"]) assert.ok(!isPublicPath(p), p);
+  for (const p of ["/quote", "/signin", "/signout", "/request-access", "/api/leads", "/api/live", "/api/inbound/email", "/api/cron/daily"]) assert.ok(isPublicPath(p), p);
+  for (const p of ["/quotes", "/quotesx", "/signin-help", "/signout2", "/request-access/x", "/request-accessx", "/api/leadsx", "/api/inboundx", "/api/cronjobs", "/"]) assert.ok(!isPublicPath(p), p);
   assert.equal(basicUsername(`Basic ${Buffer.from("a:b").toString("base64")}`), "a");
 });
 

@@ -20,6 +20,7 @@ export const config = {
 
 const CHALLENGE = { "WWW-Authenticate": 'Basic realm="siryous AMS", charset="UTF-8"' };
 const NO_STORE = { "Cache-Control": "no-store" };
+const ASSISTANT_MAX_BODY = 200_000;
 
 /** SEC-016. Next reads the nonce from this header on the request and puts it on its own scripts. */
 function contentSecurityPolicy(nonce: string): string {
@@ -41,6 +42,10 @@ export async function middleware(req: NextRequest) {
     if (csp) res.headers.set("Content-Security-Policy", csp);
     return res;
   };
+  // The framework can fail on a large body before a route sees it, so the assistant's limit is checked here first.
+  if (path === "/assistant/ask" && Number(req.headers.get("content-length") ?? 0) > ASSISTANT_MAX_BODY) {
+    return NextResponse.json({ error: "That conversation is too long. Start a new one." }, { status: 413, headers: NO_STORE });
+  }
   if (isPublicPath(path)) return pass();
   const users = loadUsers(process.env);
   if (!users.size) {

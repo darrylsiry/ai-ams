@@ -33,9 +33,10 @@ export const AUTH_USER_HEADER = "x-ams-signed-in-user";
  *   /api/inbound/*  inbound email webhooks: INBOUND_EMAIL_TOKEN
  *   /api/cron/*     scheduled jobs: CRON_TOKEN
  *   /quote, /api/leads  the public quote-request form (SAL-01)
+ *   /request-access     asking for a login, from the sign-in page
  */
 export function isPublicPath(path: string): boolean {
-  return ["/quote", "/signin", "/signout", "/api/live", "/api/leads"].includes(path) || /^\/api\/(inbound|cron)(\/|$)/.test(path);
+  return ["/quote", "/signin", "/signout", "/request-access", "/api/live", "/api/leads"].includes(path) || /^\/api\/(inbound|cron)(\/|$)/.test(path);
 }
 
 /** The user name in a Basic header, whether or not the password is right, for the sign-in log. */
