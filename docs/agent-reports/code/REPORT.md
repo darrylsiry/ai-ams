@@ -4,21 +4,21 @@
 overwrites this file. Coding agents: fix items top-down by severity and cite the `CR-NNN` ID. The
 auditor marks items resolved when it sees the fix.*
 
-- **Run:** 2026-11-03 02:15
-- **Code version:** `f58332c7`
-- **Previous run:** 2026-11-02 22:40
+- **Run:** 2026-11-09 14:08
+- **Code version:** `d7534221`
+- **Previous run:** 2026-11-03 02:15
 
 ## Summary
 
 | Severity | Open | New this run | Resolved this run |
 |----------|------|--------------|-------------------|
 | Critical | 0 | 0 | 0 |
-| High | 6 | 6 | 1 |
-| Medium | 11 | 11 | 0 |
-| Low | 6 | 6 | 1 |
-| Suggestion | 1 | 1 | 1 |
+| High | 0 | 0 | 6 |
+| Medium | 11 | 0 | 0 |
+| Low | 7 | 1 | 0 |
+| Suggestion | 1 | 0 | 0 |
 
-All three findings from the last run are fixed, and this wider pass found new problems. Many of them are invisible in demo data because the seed writes fields the real code path never sets. Fix CR-047 first: ignoring a duplicate non-pay email cancels the only task protecting that policy's coverage.
+All six High findings from the last run are fixed, and the fixes are sound: shared non-pay tasks, ambiguous sender matching, policy-number correction, wording checks, negative journals and `issued_at`. The Medium findings are all still open. Fix CR-053 first, because a voided credit can still be refunded out of trust.
 
 ## Critical
 
@@ -26,324 +26,242 @@ None.
 
 ## High
 
-### CR-047 — Stop an action on a joined email from changing the shared non-pay task
-- **Status:** New
-- **Where:** `web/src/lib/email/ingest.ts:183-191`; `web/src/app/(app)/inbox/actions.ts:30`, `:43`, `:73`
-- **Problem:** A second non-pay email on a policy joins the open NONPAY task, and its `emails.activity_id` then points at that shared task. The inbox actions treat the task as belonging to that one email. Ignoring the duplicate cancels the real task, retyping it rewrites the task's code and priority, and linking it to another client moves the task to that client.
-- **Evidence:**
-  ```ts
-  const joined = code.code === "NONPAY" && policyId ? await noteOnOpenNonpay(...) : null;
-  activityId = joined ?? await createActivity(...)
-  // ignoreAction
-  if (e?.activity_id) await c.query("UPDATE activities SET status = 'cancelled', outcome = 'Email needs no action' ... WHERE id = $1 AND status IN ('open','waiting')", [e.activity_id, u.id]);
-  ```
-  A duplicate carrier notice is exactly what staff would ignore. The confirmation ("Ignore this email and cancel its task?") doesn't say the task is shared. The daily job recreates a NONPAY task only when the policy is `pending_cancel` and within the window, and only if that notice's `auto_key` hasn't been used.
-- **Fix:** Treat a task as shared when `activities.email_id` differs from this email's id, or when more than one email has that `activity_id`. For a shared task:
-  - `ignoreAction` marks only the email as ignored and leaves a note on the task.
-  - `retypeAction` and `linkClientAction` leave the task alone. They either create a separate task for this email or refuse with an explanation.
-- **Verify:** Add a rolled-back test: ingest two non-pay emails for one policy, ignore the second through the extracted logic, and assert the task stays `open`. Retype and link get the same check.
-
-### CR-048 — Refuse to guess a client when the sender is on several, and never match a merged client
-- **Status:** New
-- **Where:** `web/src/lib/email/ingest.ts:57-68`; `web/src/app/(app)/clients/actions.ts:141`
-- **Problem:** The sender lookup takes the first row with no ordering and scores it 0.9, which clears the 0.75 auto-action threshold. An owner on both a personal and a commercial account, a shared bookkeeper or a spouse files on an arbitrary client. The domain branch treats two matches as "no answer" (CR-008), but this branch doesn't. Neither branch excludes inactive clients, and a merge leaves `email` and `website` on the dropped client. Mail can therefore file on a dead "X (merged)" record, and that leftover can make a domain match ambiguous.
-- **Evidence:**
-  ```sql
-  SELECT client_id FROM contacts WHERE lower(email) = $1 AND client_id IS NOT NULL
-  UNION ALL SELECT id FROM clients WHERE lower(email) = $1 LIMIT 1
-  ```
-  The seed generates one contact email per client, so the demo never hits this.
-- **Fix:** Select distinct client ids joined to `clients` with `status <> 'inactive'`, limited to 2.
-  - **One id:** behaves as today.
-  - **Several ids:** use the policy-number or name evidence if it picks one of them. Otherwise leave the client unset so the email goes to triage, or use a confidence below the threshold.
-  - **Merges:** add the status filter to the domain query and clear `email` and `website` on the dropped client.
-- **Verify:** Add a rolled-back test with one contact email on two clients: `matchClient` returns no client, or confidence below 0.75. After a merge, the dropped client's address and domain don't match it.
-
-### CR-049 — Provide a way to record the real policy number after binding
-- **Status:** New
-- **Where:** `web/src/app/(app)/policies/actions.ts:58`; `web/src/app/(app)/policies/new/policy-form.tsx`; `web/src/lib/policies.ts:79-85`
-- **Problem:** The new-policy form says to leave the number blank if the carrier hasn't issued one, and stores `PENDING-xxxxxx`. Nothing in the app can change it afterwards, including "Carrier policy received". The placeholder stays on certificates, dec pages and ID cards. Commission lines (`findTermForLine`) and email (`matchClient`) match on the policy number, so they can't find that term.
-- **Evidence:** Searching `web/src` for writes to `policies.policy_number` finds only the `INSERT` in `createPolicy`. `markIssued` sets only status and `issued_at`, and no policy edit page exists.
-  ```ts
-  policyNumber: String(f.get("policy_number") ?? "").trim() || `PENDING-${Date.now().toString().slice(-6)}`
-  ```
-- **Fix:** Add a required policy-number field to the "Carrier policy received" form when the number starts with `PENDING-`. Also add an audited "Correct policy number" action on the policy page, with before and after in the audit row.
-- **Verify:** Create a bound policy with no number and mark it issued with a real number. A commission line and an email quoting that number now match it, and an audit row records the change.
-
-### CR-050 — Check certificate wording on every line, or warn that it wasn't checked
-- **Status:** New
-- **Where:** `web/src/lib/certificates.ts:50-65`, `:135`; `web/src/app/(app)/certificates/new/page.tsx:36`, `:44`
-- **Problem:** `verifyWording` only tests `lob` values GL, WC and CA. A BOP, a commercial umbrella or a package whose extra lines include GL returns no warnings, so the certificate issues with no prompt. Additional insured is ticked by default when there is no task, and BOP is a core MVP line. The form still says "Requested wording is checked against the endorsements on each policy before issuing." Bulk `renewCertificates` carries the flags forward without calling `verifyWording` at all.
-- **Evidence:**
-  ```ts
-  if (f.additional_insured && p.lob === "GL" && !has(/^CG 20 (10|26|37|38)/)) warnings.push(...)
-  ```
-  `policy_lines` is never read here. The seed gives a BOP only `BP 00 03`, so a demo BOP certificate with additional insured wording shows no warning, on the form or on its detail page.
-- **Fix:**
-  - Check every line from `policy_lines` plus `lob`, with form patterns for BOP (for example `BP 04 ..`) and umbrella or following-form lines.
-  - Where no rule exists, return "wording on X (line) can't be verified: confirm with the carrier" instead of nothing.
-  - In `renewCertificates`, run the check. Skip and report any certificate with warnings, or raise a task for it.
-- **Verify:** Issuing a BOP with additional insured and no endorsement on file returns a warning. A GL + BOP package checks both lines. A bulk reissue with a missing endorsement doesn't pass silently.
-
-### CR-051 — Stop net-negative statements from posting phantom cash
-- **Status:** New
-- **Where:** `web/src/lib/accounting.ts:29`, `:292-299`, `:416-423`, `:481-486`; `web/src/app/(app)/accounting/payables/page.tsx:31`; `web/src/app/(app)/accounting/producers/page.tsx:36`
-- **Problem:** `post()` keeps negative amounts, and three paths can pass one. A carrier whose only collected lines are return premium shows a negative "owed" with a "Pay statement" button. Clicking it posts `trust_cash` credit of −$850, which raises trust cash whether or not the carrier sent anything, and the extra cash becomes sweepable. A producer statement with net chargebacks does the same to operating cash, is marked paid, and the amount the producer owes disappears. A net-negative commission statement also posts negative lines.
-- **Evidence:**
-  ```ts
-  [{ account: "carrier_payable", debit: total }, { account: "trust_cash", credit: total }]   // total < 0
-  ```
-  Worked through `sweepable()`: the carrier's owed amount is `max(0, -850) = 0` before and after, while `trust` rises by 850. `available` therefore rises by $850 with no deposit. These negative lines also appear in the detail CSV and as negative "Out" amounts on the trust page. CR-045 fixed only the refund-void path.
-- **Fix:**
-  - **`post()`:** reject negative amounts, or swap the sides. Add `CHECK (debit >= 0 AND credit >= 0)` in a new migration after correcting any existing rows.
-  - **Carriers:** when the total is negative, replace "Pay statement" with "Record return from carrier". It needs a deposit reference and posts debit `trust_cash`, credit `carrier_payable`.
-  - **Producers:** refuse to pay a negative statement. Leave it as a draft and carry it to the next period, so the next build nets it off.
-  - **Commission statements:** post a negative deposit with the sides swapped.
-- **Verify:** Add rolled-back tests. A return-only carrier can't be "paid", and `sweepable().available` doesn't change until a return is recorded. A negative producer statement can't be paid, and its amount reduces the next one. No `ledger_entries` row is ever negative.
-
-### CR-052 — Set `issued_at` on in-force policies so missing-commission detection works
-- **Status:** New
-- **Where:** `web/src/lib/policies.ts:37-45`; `web/src/app/(app)/accounting/commissions/page.tsx:33`; `web/src/app/(app)/policies/[id]/page.tsx:137`
-- **Problem:** `createPolicy` never writes `policies.issued_at`, even with status `active`, and every renewal is created `active`. Only `markIssued` sets it, and its button appears only on bound policies. "Commission not received" (COM-21) requires `issued_at IS NOT NULL`, so these policies are silently left out and the page can say "Every direct-bill policy has been paid." The policy page also shows "Issued: Not yet" on them.
-- **Evidence:** The `INSERT` column list has no `issued_at`, while the query filters on it:
-  ```sql
-  AND p.status IN ('active','expired') AND p.issued_at IS NOT NULL
-  ```
-  The seed sets the column directly (`web/scripts/seed.mjs:423`), so the demo hides this.
-- **Fix:** In `createPolicy`, write `issued_at = now()` when status is `active`. Add a migration that backfills from the policy's issued `new`, `renewal` or `rewrite` transaction.
-- **Verify:** Add a rolled-back test: an `active` direct-bill policy created through `createPolicy`, effective 60 days ago with no commission line, appears in the COM-21 query. Move that query into `lib/` so it can be tested.
+None.
 
 ## Medium
 
 ### CR-053 — Guard refunds against voided credits and uncollected money
-- **Status:** New
-- **Where:** `web/src/lib/accounting.ts:198-204`
-- **Problem:** `refundInvoice` never checks `status`, unlike `applyCredit`. A voided credit still has a negative balance, so a stale Refund form pays it out of trust, and `refreshInvoiceStatus` then returns early on `void`. Separately, nothing stops refunding a return-premium credit while the client still owes the original invoice. That pays out money the agency never collected.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/accounting.ts:199-205`
+- **Problem:** `refundInvoice` still never checks `status`, unlike `applyCredit`. A voided credit keeps a negative balance, so a stale Refund form (or a direct POST to `refundAction`) pays it out of trust. Nothing stops refunding a return-premium credit while the client still owes the original invoice either. The client billing tab shows "Refund $500" beside an open $1,000 debit.
 - **Evidence:**
   ```ts
+  const inv = await one<...>("SELECT * FROM invoices WHERE id = $1 FOR UPDATE", [invoiceId], c);
   if (!inv || Number(inv.total) >= 0) throw new Error("Only a credit can be refunded.");
   const bal = await invoiceBalance(invoiceId, c);   // a void credit still has bal = total
   ```
-  Cancelling an unpaid $1,000 invoice's policy with a $500 return shows a "Refund $500" button beside the $1,000 balance.
-- **Fix:** Refuse unless `status = 'open'`. When the client has an open positive invoice, refuse with "Apply this credit first" or require an explicit override in the action. The trust limit should still hold either way.
-- **Verify:** Add tests: refunding a voided credit throws and leaves `trust_cash` unchanged, and refunding with an open debit is refused without the override.
+  The UI hides the button unless `status === "open"`, but the server doesn't enforce it.
+- **Fix:** Throw unless `inv.status === 'open'`. When the client has an open positive invoice, refuse with "Apply this credit first", or require an explicit override field in `refundAction`.
+- **Verify:** Add rolled-back tests. Refunding a voided credit throws and leaves `trust_cash` unchanged. Refunding while a debit is open is refused without the override.
 
 ### CR-054 — Reset wholesaler and admitted status when a renewal moves carriers
-- **Status:** New
-- **Where:** `web/src/lib/policies.ts:269-273`; `web/src/lib/accounting.ts:81`
-- **Problem:** A rewrite to another carrier keeps the old `wholesaler_id` and `is_admitted`. `createInvoice` pays `wholesaler_id ?? carrier_id`, so an agency-bill rewrite owes the old wholesaler. Surplus lines tax is added or omitted according to the old carrier's status.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/policies.ts:293-297`; `web/src/lib/accounting.ts:80-82`
+- **Problem:** A rewrite to another carrier copies the old `wholesaler_id` and `is_admitted`. `createInvoice` pays `wholesaler_id ?? carrier_id`, so an agency-bill rewrite owes the old wholesaler. Surplus lines tax is added or left off according to the old carrier's status.
 - **Evidence:**
   ```ts
   wholesalerId: p.wholesaler_id, ... isAdmitted: p.is_admitted, ... newRenewal: d.carrierId === p.carrier_id ? "renewal" : "rewrite"
   ```
-  `createPolicyAction` takes `isAdmitted` from the chosen carrier, but this path doesn't.
-- **Fix:** When `d.carrierId !== p.carrier_id`, use `wholesalerId: null` (or a wholesaler picked on the form) and take `isAdmitted` from the new carrier.
+- **Fix:** When `d.carrierId !== p.carrier_id`, pass `wholesalerId: null` (or a wholesaler picked on the form) and read `isAdmitted` from the new carrier's `admitted`.
 - **Verify:** Rewrite a non-admitted wholesaler policy to an admitted carrier on agency bill. The invoice lines name the new carrier and have no tax lines.
 
 ### CR-055 — Don't record an unreadable policy PDF as checked
-- **Status:** New
-- **Where:** `web/src/app/(app)/policies/actions.ts:206`, `:214`
-- **Problem:** The AI can return `overall: "unreadable"` with no discrepancies. The action writes "Claude found 0 discrepancies:" and sets `policy_checked_at`, so the E&O check shows as done and the policy drops off the "unchecked" list.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/app/(app)/policies/actions.ts:215-225`
+- **Problem:** `PolicyCheckResult.overall` can be `"unreadable"` (`web/src/lib/ai.ts:117`). The action then writes "Claude found 0 discrepancies:" and calls `recordPolicyCheck`. The E&O check shows as done and the policy drops off the unchecked list.
 - **Evidence:**
   ```ts
   summary = r!.overall === "matches" ? ... : `Claude found ${r!.discrepancies.length} discrepanc...`;
   ...
   await recordPolicyCheck(id, u, summary);
   ```
-- **Fix:** On `unreadable`, redirect with an error, or keep the note and task without calling `recordPolicyCheck`. Move the outcome handling into `lib/policies.ts` so it can be tested.
+- **Fix:** On `unreadable`, redirect with an error, or save the note without calling `recordPolicyCheck`. Move the outcome handling into `lib/policies.ts` so it can be tested.
 - **Verify:** A stubbed `unreadable` result leaves `policy_checked_at` null and shows an error.
 
 ### CR-056 — Clamp term expiration dates at the end of the month
-- **Status:** New
+- **Status:** Open (first seen 2026-11-03)
 - **Where:** `web/src/lib/policies.ts:24-28`
-- **Problem:** `setUTCMonth` overflows when the target month is shorter. A six-month term from Aug 31 expires Mar 3, and one from Oct 31 expires May 1. Twelve months from Feb 29 lands on Mar 1. The stored expiration drives certificates, ID cards, renewal timing and automatic expiry. No test covers this function.
+- **Problem:** `setUTCMonth` overflows when the target month is shorter. A 6-month term from Aug 31 expires Mar 3, and one from Oct 31 expires May 1. Twelve months from Feb 29 gives Mar 1. That date drives certificates, ID cards, renewal timing and automatic expiry.
 - **Evidence:**
   ```ts
   d.setUTCMonth(d.getUTCMonth() + months);   // 2026-08-31 + 6 → 2027-03-03
   ```
 - **Fix:** Compute the target year and month, then use `min(day, lastDayOfTargetMonth)`.
-- **Verify:** Add unit tests: `2026-08-31 + 6` gives `2027-02-28`, `2026-10-31 + 6` gives `2027-04-30`, `2028-02-29 + 12` gives `2029-02-28`, and `2026-01-15 + 12` gives `2027-01-15`.
+- **Verify:** Unit tests: `2026-08-31 + 6 → 2027-02-28`, `2026-10-31 + 6 → 2027-04-30`, `2028-02-29 + 12 → 2029-02-28`, `2026-01-15 + 12 → 2027-01-15`.
 
 ### CR-057 — Stop counting a renewed policy twice as in-force premium
-- **Status:** New
-- **Where:** `web/src/lib/policies.ts:273`; `web/src/lib/reports.ts:102`; `web/src/lib/work.ts:66`, `:82`; `web/src/app/(app)/clients/[id]/page.tsx:62-63`
-- **Problem:** A renewal term is created `active` as soon as it is entered, often months ahead, and the expiring term stays `active` until it expires. Status alone defines "in force" in the book report, the client's in-force premium and the priority queue's account weight. Both terms therefore count, which inflates the book and can wrongly award the "Key account" ranking points. A `bound` policy with no binder date and a past expiration also counts indefinitely, because automation expires only `active` terms.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/work.ts:66-67`, `:82-83`; `web/src/lib/reports.ts:102`; `web/src/app/(app)/clients/[id]/page.tsx`; `web/src/lib/assistant-tools.ts:150`, `:210`, `:602`
+- **Problem:** A renewal term is created `active` when it is entered, often months early, while the expiring term stays `active` until it lapses. "In force" is decided by status alone, so both terms count. That inflates the book report, client premium and the queue's Key-account points. The new assistant tools (`list_clients`, `list_policies` `in_force`, `list_carriers`) repeat the same predicate.
 - **Evidence:**
   ```sql
-  WHERE p.status IN ('active','bound','pending_cancel') GROUP BY 1
+  WHERE p2.client_id = a.client_id AND p2.status IN ('active','pending_cancel','bound')
   ```
-- **Fix:** Share one in-force predicate that also requires `effective_date <= current_date AND expiration_date >= current_date`, and use it at these sites. Have daily automation expire or flag a stale `bound` term.
-- **Verify:** Add a rolled-back test: renew a $10,000 policy with a future effective date, and client premium and `bookBy` count $10,000, not $20,000.
+- **Fix:** Define one shared in-force predicate that also requires `effective_date <= current_date AND expiration_date >= current_date`, and use it at these sites. Have the daily job flag stale `bound` terms past expiration.
+- **Verify:** Add a rolled-back test: renew a $10,000 policy with a future effective date. `bookBy` and the client premium show $10,000, not $20,000.
 
 ### CR-058 — Validate cancellation dates and keep coverage in force until a future date
-- **Status:** New
-- **Where:** `web/src/lib/policies.ts:182-200`; `web/src/app/(app)/policies/[id]/page.tsx:104-109`
-- **Problem:** A non-notice cancellation becomes `cancelled` immediately, whatever date is entered. An insured asking to cancel next month shows as cancelled today: certificates are refused, holders are flagged and the premium leaves the book, even though the form says coverage ends "on the date above". The date isn't checked against the term either, though `endorsePolicy` does check it.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/policies.ts:203-228`; `web/src/lib/automation.ts:26-37`
+- **Problem:** A non-notice cancellation becomes `cancelled` immediately, whatever date is entered, and the date isn't checked against the term (`endorsePolicy` does check). `pendingCancellationTasks` also raises a "cancels … unless paid" NONPAY task for every `pending_cancel`, whatever the reason.
 - **Evidence:**
   ```ts
   [policyId, k.pending ? "pending_cancel" : "cancelled", k.date, k.reason, k.method, k.returnPremium || null]
   ```
-- **Fix:**
-  - Reject dates outside the term.
-  - Store a future date as `pending_cancel`, so the daily job finalizes it when the date passes.
-  - In `pendingCancellationTasks`, raise a NONPAY task only when the reason is non-payment. Otherwise a requested cancellation gets a task saying "cancels unless paid".
-- **Verify:** A future-dated insured request stays in force until the day after its date, then finalizes with its credit and raises no NONPAY task. An out-of-term date is refused.
+- **Fix:** Reject dates outside `effective_date..expiration_date`. Store a future-dated cancellation as `pending_cancel`, so the daily job finalizes it. Raise NONPAY only when the reason is non-payment.
+- **Verify:** A future-dated insured request stays in force until its date, then finalizes with no NONPAY task. A date outside the term is refused.
 
 ### CR-059 — Let repeat events raise a new task despite `auto_key`
-- **Status:** New
-- **Where:** `web/src/lib/certificates.ts:83`; `web/src/lib/automation.ts:109`; `web/src/lib/accounting.ts:253-270`
-- **Problem:** `auto_key` is unique forever, so a later occurrence of the same event can't raise a new task. A policy cancelled, reinstated and cancelled again keeps the key `coi-notinforce:<id>:cancelled`, and holders aren't flagged the second time. An invoice chased once, paid, then reopened by an NSF keeps `pastdue:<id>`, so nobody chases it again.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/certificates.ts:108`; `web/src/lib/automation.ts:109`; `web/src/lib/accounting.ts:254-272`
+- **Problem:** `auto_key` is unique forever. Cancel, reinstate, then cancel again reuses `coi-notinforce:<id>:cancelled`, so holders aren't flagged the second time. An invoice that was chased, paid, then reopened by an NSF reuses `pastdue:<id>`, so nobody chases it again.
 - **Evidence:**
   ```ts
   autoKey: `coi-notinforce:${policyId}:${why}`
   autoKey: `pastdue:${i.id}`
   ```
-  `createActivity` uses `ON CONFLICT (auto_key) DO NOTHING`.
-- **Fix:** Make the key specific to the occurrence by appending the cancellation date to the certificate key. In `reverseReceipt`, raise a high-priority BILL-INQ with the key `nsf:<receiptId>` for each reopened invoice.
-- **Verify:** Run cancel, reinstate, then cancel on a different date, and get two notify tasks. An NSF reversal after a closed past-due task raises a new open task.
+- **Fix:** Append the cancellation date (or transaction id) to the certificate key. In `reverseReceipt`, raise a high-priority BILL-INQ keyed `nsf:<receiptId>` for each invoice it reopens.
+- **Verify:** Cancel, reinstate, then cancel on another date: two notify tasks exist. An NSF after a closed past-due task raises a new open task.
 
 ### CR-060 — Close or update open work when a policy's status changes
-- **Status:** New
-- **Where:** `web/src/lib/policies.ts:79-85`, `:154-169`, `:182-226`; `web/src/lib/priority.ts:71-74`
-- **Problem:** Only the task the action started from gets closed. Reinstating from the policy page leaves the NONPAY task Urgent with "Coverage at risk". Cancelling leaves renewal tasks open, and they then score +80 with "Policy already expired" near the top of the queue, even though renewal is refused. Marking a binder issued leaves BINDER-EXP open. `renewPolicy` already does this cleanup for its own case.
-- **Evidence:** `reinstatePolicy` and `cancelPolicy` have no `UPDATE activities` statement. The closing logic exists only at `policies.ts:281-282` and in `renewalStageAction`.
-- **Fix:** Add one helper that closes tasks by code and policy with an outcome, and call it in the same transaction:
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/policies.ts:95-104`, `:203-250`
+- **Problem:** Only the task the action started from gets closed.
+  - Reinstating from the policy page leaves the NONPAY task Urgent.
+  - Cancelling leaves renewal tasks open, and they score +80 for "Policy already expired".
+  - `markIssued` leaves BINDER-EXP open.
+- **Evidence:** `reinstatePolicy`, `cancelPolicy`, `finalizeCancellation` and `markIssued` contain no `UPDATE activities`. Only `renewPolicy` (`:305-306`) and `renewalStageAction` close tasks.
+- **Fix:** Add one helper that closes tasks by policy and code with an outcome, and call it in the same transaction:
   - **Reinstate:** close NONPAY, UW-CANC and CANC-REQ.
   - **Cancel or finalize:** close REN-REVIEW, REN-PROC and REN-REMKT.
   - **`markIssued`:** close BINDER-EXP.
-- **Verify:** Add rolled-back tests that assert the task status after each transition. Reinstating leaves no open NONPAY task on that policy.
+- **Verify:** Add rolled-back tests that assert task status after each transition.
 
 ### CR-061 — Keep a malformed email from failing intake on every retry
-- **Status:** New
-- **Where:** `web/src/lib/email/parse.ts:120`, `:142`; `web/src/lib/email/ingest.ts:158-164`; `web/src/app/api/inbound/email/route.ts:89-92`
-- **Problem:** The Postmark and generic parsers trust the date string, so an unparseable value becomes an `Invalid Date` that Postgres rejects. A NUL character in a subject or body fails the same way, because Postgres text can't hold it. The webhook returns 500 and the provider retries the same message until it gives up, so that email produces no record or task.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/email/parse.ts:120`, `:142`; `web/src/lib/email/ingest.ts:159-167`; `web/src/app/api/inbound/email/route.ts:85-93`
+- **Problem:** An unparseable `Date` becomes `Invalid Date`, which Postgres rejects. A NUL in a subject or body fails the same way. The webhook returns 500 and the provider retries the same message until it gives up, so that email is lost.
 - **Evidence:**
   ```ts
   date: j.Date ? new Date(String(j.Date)) : new Date(),
   ```
-  Neither `parse.ts` nor `ingest.ts` checks the date's validity or strips NUL.
-- **Fix:** Normalize in one place before the insert. Fall back to `new Date()` when `isNaN(date.getTime())`, and strip `\u0000` from the subject, text, HTML, names and filenames. Separately, treat permanent errors (SQLSTATE class 22) as 4xx-style failures with a clear log line, or store the message raw for staff.
-- **Verify:** Unit test: `fromGeneric({ date: "garbage", ... })` returns a valid date. A rolled-back test ingests a body containing NUL and creates a task.
+- **Fix:** Normalize once before the insert. Use `new Date()` when `isNaN(date.getTime())`, and strip `\u0000` from the subject, text, HTML, names and filenames. Return a 4xx for SQLSTATE class 22 errors.
+- **Verify:** `fromGeneric({ date: "garbage", … })` returns a valid date. A rolled-back ingest of a body containing NUL creates a task.
 
 ### CR-062 — Pick the right CSV columns and accept US dates on commission statements
-- **Status:** New
-- **Where:** `web/src/app/(app)/accounting/actions.ts:103-109`
-- **Problem:** Columns are found by the first header containing a word. With "Comm Rate, Comm Amount" the commission column is the rate, and with "Policy Type, Policy Number" the policy column is the type. Only ISO dates are kept, so `10/01/2026` becomes null and the line goes to the newest term with that number. That can apply the wrong commission rate and the wrong new-versus-renewal producer split. A rate such as `12%` parses to 0, then null.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/app/(app)/accounting/actions.ts:106-117`
+- **Problem:** Columns are matched by the first header containing a word. "Comm Rate, Comm Amount" picks the rate as the commission, and "Policy Type, Policy Number" picks the type as the policy. Only ISO dates are kept, so `10/01/2026` becomes null and the line matches the newest term. A rate written `12%` parses to 0.
 - **Evidence:**
   ```ts
   const col = (...names: string[]) => h.findIndex((x) => names.some((n) => x.includes(n)));
-  ip = col("policy"), ... ic = col("commission", "comm")
-  ... /^\d{4}-\d{2}-\d{2}$/.test(r[ie]) ? r[ie] : null
-  num = ... .replace(/[$,()\s]/g, "")   // keeps "%"
   ```
-- **Fix:** Export the parser so it can be tested. Prefer exact or specific headers: for commission, a header with amount or paid and not rate or %; for policy, a header with number, no or #. Parse `M/D/YYYY`, strip `%`, and show the column mapping on the statement page.
-- **Verify:** Unit tests for the two header orders above, `10/01/2026`, `12%` and `(5.00)`.
+- **Fix:** Export the parser. Prefer specific headers: for commission, "amount" or "paid" and not "rate" or "%"; for policy, "number", "no" or "#". Parse `M/D/YYYY` and strip `%`.
+- **Verify:** Unit tests for both header orders, `10/01/2026`, `12%` and `(5.00)`.
 
 ### CR-063 — Print the VIN on ID cards for vehicles added in the app
-- **Status:** New
-- **Where:** `web/src/lib/pdf.ts:178`, `:191`; `web/src/app/(app)/clients/[id]/page.tsx:294`; `web/src/app/(app)/clients/actions.ts:118`
-- **Problem:** The add-item form stores a VIN as `data.identifier`, while ID cards read `data.vin`, so every vehicle entered in the app prints "VIN: -". The seed writes `vin` (`web/scripts/seed.mjs:301`), which hides this. ID cards also render for a cancelled or expired policy with no marking, because `documents/render` doesn't check status. Certificates get a watermark in the same situation.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/pdf.ts:178`, `:191`; `web/src/app/(app)/clients/[id]/page.tsx:294`; `web/src/app/(app)/documents/render/route.ts`
+- **Problem:** The add-item form stores the VIN as `data.identifier`, but ID cards read `data.vin`, so vehicles entered in the app print "VIN: -". ID cards also render for cancelled or expired policies with no marking.
 - **Evidence:**
   ```ts
   d.text(`VIN: ${v.data?.vin ?? "-"}`, { x: 60, size: 9 });
   ```
 - **Fix:** Read `v.data?.vin ?? v.data?.identifier`. Refuse or watermark ID cards when the policy isn't in force.
-- **Verify:** Add a vehicle through `addItemAction`, and its VIN appears in the card text. A cancelled policy's card is refused or marked.
+- **Verify:** A vehicle added through `addItemAction` shows its VIN on the card. A cancelled policy's card is refused or marked.
 
 ## Low
 
 ### CR-064 — Refuse task transitions on a closed task
-- **Status:** New
-- **Where:** `web/src/lib/work.ts:149-181`
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/work.ts:142-182`
 - **Problem:** `load` locks the row but never checks its status. A stale form can complete a done task again, overwriting who closed it and creating a second follow-up. Snooze or Wait reopens a finished task and leaves `completed_at` and `outcome` behind.
-- **Evidence:** `completeTask`, `snoozeTask` and `setWaiting` go straight from `load(id, c)` to `UPDATE`, unlike `closeTask` in `policies/actions.ts:25`.
-- **Fix:** Throw "This task is already closed" when status is `done` or `cancelled`, and handle it in the actions as a flash message. Reopen stays the only way back.
-- **Verify:** Complete a task twice with `followUpDays`, and the second attempt throws with only one follow-up created.
+- **Evidence:** `completeTask`, `snoozeTask` and `setWaiting` go straight from `load(id, c)` to `UPDATE`. `completeLinkedTask` checks status, but outside the lock.
+- **Fix:** In those three functions, throw "This task is already closed" when status is `done` or `cancelled`. Show it as a flash message in the actions.
+- **Verify:** Completing a task twice with `followUpDays` throws on the second call and leaves one follow-up.
 
 ### CR-065 — Tell staff when an attachment was dropped at intake
-- **Status:** New
+- **Status:** Open (first seen 2026-11-03)
 - **Where:** `web/src/lib/email/parse.ts:27-28`
-- **Problem:** `cap` silently drops attachments over 15 MB and any beyond the twentieth. The task and email give no sign, so staff can believe they have the full submission.
+- **Problem:** `cap` silently drops attachments over 15 MB and any beyond the 20th. Nothing on the task says so.
 - **Evidence:**
   ```ts
   const cap = (list: Attachment[]) => list.filter((a) => a.data.length <= MAX_ATTACHMENT).slice(0, MAX_ATTACHMENTS);
   ```
-- **Fix:** Return the names of dropped files on `ParsedEmail` and add them to the task description, for example "2 attachments were too large and weren't saved: …".
-- **Verify:** Parse a message with a 16 MB attachment, and the created task names it.
+- **Fix:** Return the dropped names on `ParsedEmail` and add them to the task description.
+- **Verify:** A message with a 16 MB attachment creates a task that names it.
 
 ### CR-066 — Show each policy check once in its history
-- **Status:** New
-- **Where:** `web/src/app/(app)/policies/actions.ts:214`, `:217`; `web/src/lib/policies.ts:89`; `web/src/app/(app)/policies/[id]/page.tsx:358`
-- **Problem:** One check writes two audit rows, `policy.checked` and `policy.check_recorded`. The history lists both actions, so every check appears twice.
-- **Evidence:** `recordPolicyCheck` audits, then the action audits again with the same summary. `CheckHistory` selects `action IN ('policy.checked','policy.check_recorded')`.
-- **Fix:** Remove the second `audit` call. Keep `policy.checked`, and keep `check_recorded` in the query so old rows still show.
-- **Verify:** Record one check, and exactly one new audit row and one history line appear.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/app/(app)/policies/actions.ts:225`, `:228`; `web/src/lib/policies.ts:106-109`
+- **Problem:** One check writes both `policy.checked` (in `recordPolicyCheck`) and `policy.check_recorded` (in the action). The history lists both.
+- **Evidence:** `await recordPolicyCheck(id, u, summary);` … `await audit({ ..., action: "policy.check_recorded", ... })`
+- **Fix:** Remove the second `audit` call, and keep the old action name in the history query.
+- **Verify:** One check adds exactly one audit row.
 
 ### CR-067 — Keep the primary line when "Additional lines" are ticked
-- **Status:** New
-- **Where:** `web/src/app/(app)/policies/new/policy-form.tsx`; `web/src/app/(app)/policies/actions.ts:59`; `web/src/lib/policies.ts:47-49`
-- **Problem:** The checklist is labelled "Additional lines (package)", but its values replace the primary line. A BOP with GL ticked stores only `GL` in `policy_lines`, with the whole premium on it, and the package label on the policy page is wrong.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/policies.ts:49`
+- **Problem:** The ticked lines replace the primary line instead of adding to it. A BOP with GL ticked stores only `GL`, carrying the whole premium.
 - **Evidence:**
   ```ts
   const lines = input.lines.length ? input.lines : [input.lob];
   ```
-- **Fix:** In `createPolicy`, use `[...new Set([input.lob, ...input.lines])]`. Renewals copy existing lines, which still works.
-- **Verify:** Create a BOP with GL ticked, and `policy_lines` holds both.
+- **Fix:** `const lines = [...new Set([input.lob, ...input.lines])];`
+- **Verify:** A BOP with GL ticked has both rows in `policy_lines`.
 
 ### CR-068 — Use the export stamp so late postings can be identified
-- **Status:** New
-- **Where:** `web/src/app/(app)/accounting/actions.ts:171`; `web/src/app/(app)/accounting/export/route.ts:29-30`
-- **Problem:** "Mark as exported" sets `exported_batch`, but the app never reads it. Every export returns the whole month, so a backdated posting into an unlocked, already-exported month can't be separated, and importing the month again double-counts in QuickBooks.
-- **Evidence:** In `web/src`, `exported_batch` appears only in that one `UPDATE`. The export query has no filter on it.
-- **Fix:** Add `?scope=unexported` to the export links and show a count of unexported entries for each month on the ledger page.
-- **Verify:** Mark a month as exported and post a backdated entry. The unexported export contains only that journal and it balances.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/app/(app)/accounting/actions.ts:178`; `web/src/app/(app)/accounting/export/route.ts:29-30`
+- **Problem:** `exported_batch` is written but never read. Every export returns the whole month, so a backdated posting into an exported month can't be separated, and re-importing double-counts.
+- **Evidence:** The only `exported_batch` reference in `web/src` is that `UPDATE`.
+- **Fix:** Support `?scope=unexported` in the export route, and show unexported counts per month on the ledger page.
+- **Verify:** After marking a month exported and posting a backdated entry, the unexported export holds only that journal and it balances.
 
 ### CR-069 — Expire a term and flag its certificates in one transaction
-- **Status:** New
+- **Status:** Open (first seen 2026-11-03)
 - **Where:** `web/src/lib/automation.ts:87-92`
-- **Problem:** The bulk `UPDATE` commits first, then certificates are flagged one policy at a time on the pool. If a flag fails or the process stops, the remaining policies are already `expired`, later runs don't select them, and their holders are never flagged.
+- **Problem:** The bulk expire `UPDATE` commits first, then certificates are flagged one at a time on the pool. If one flag fails or the process stops, the remaining policies are already `expired` and are never selected again, so their holders are never flagged.
 - **Evidence:**
   ```ts
   const exp = await db.query(`UPDATE policies SET status = ... WHERE status = 'active' AND expiration_date < $1::date RETURNING ...`, [today]);
   for (const p of exp.rows) if (!p.renewal_policy_id) await flagCertificates(p.id, "expired", actor, db);
   ```
-- **Fix:** Select the due ids first, then expire and flag each one in its own `tx`, with the same per-row error handling step 5 already uses for cancellations.
-- **Verify:** Make `flagCertificates` fail for one policy in a test: that policy stays `active` for the next run, and the others complete.
+- **Fix:** Select the due ids, then expire and flag each in its own `tx`, with the same try/catch step 5 uses.
+- **Verify:** Force `flagCertificates` to fail for one policy. That policy stays `active` and the others complete.
+
+### CR-071 — Fix the LIKE escaping in the assistant's person lookup
+- **Status:** New
+- **Where:** `web/src/lib/assistant-tools.ts:68`
+- **Problem:** The partial-name fallback in `findUser` escapes `%`, `_` and `\` with two backslashes instead of one. In `ILIKE`, `\\%` means "a literal backslash, then any characters". Any name fragment containing `%`, `_` or `\` therefore matches nobody, and the escaping intended to make those characters literal never does. The blast radius is small, because the exact-match query runs first.
+- **Evidence:**
+  ```ts
+  [ref.replace(/[%_\\\\]/g, "\\\\$&")]   // "\\\\$&" is the two characters \\ then the match
+  ```
+- **Fix:** Use `ref.replace(/[%_\\]/g, "\\$&")`. A shared `likeEscape` helper would keep this consistent with other search sites.
+- **Verify:** A unit test where `likeEscape("a_b")` returns `a\_b`. With a user named "Pat_Lee" and the ref `"t_L"`, `work_queue` finds that one user.
 
 ## Suggestions
 
 ### CR-070 — Define invoice balance in one place
-- **Status:** New
-- **Where:** `web/src/lib/accounting.ts:117`, `:324`, `:341`, `:498`; `web/src/app/(app)/accounting/invoices/page.tsx:28`; `web/src/app/(app)/accounting/receipts/new/page.tsx:23`, `:28`; `web/src/app/(app)/clients/[id]/page.tsx:56`, `:354`; `web/src/lib/client-search.ts:16`; `web/src/lib/pdf.ts:205`
-- **Problem:** The same "total minus finalized applications" SQL is written about a dozen times. The money paths depend on it agreeing everywhere, and the status filters around it already differ from one site to the next.
-- **Fix:** Add a migration creating an `invoice_balances` view (`id`, `client_id`, `total`, `status`, `paid`, `balance`). Use it at these sites, starting with `sweepable` and `aging`.
+- **Status:** Open (first seen 2026-11-03)
+- **Where:** `web/src/lib/accounting.ts:117`, `:329`, `:346`, `:508`; `web/src/app/(app)/accounting/invoices/page.tsx:28`; `web/src/app/(app)/clients/[id]/page.tsx:356`; `web/src/lib/pdf.ts:205`; `web/src/lib/assistant-tools.ts:179`, `:478`, `:492`; and the other sites listed last run
+- **Problem:** The "total minus finalized applications" SQL is now written about fifteen times; the assistant tools added three more copies. The status filters around it already differ from one site to the next.
+- **Fix:** Add a migration creating an `invoice_balances` view (`id`, `client_id`, `total`, `status`, `paid`, `balance`). Use it everywhere, starting with `sweepable`, `aging` and `accounting_overview`.
 
 ## Resolved since last run
-- **CR-044 — Stop counting already-paid carrier lines as "uncollected" in the sweep limit** — resolved: the `u` query now excludes carrier lines with a `carrier_statement_id`, and a rolled-back test covers the NSF case.
-- **CR-045 — Treat reversing a refund as voiding the refund, not as an NSF with negative journal lines** — resolved: `reverseReceipt` posts positive, swapped lines for a refund, and the receipts page says "Void refund". The negative-line risk that remains on other paths is CR-051.
-- **CR-046 — Add rolled-back tests for the CR-036, CR-038 and CR-044 fixes** — resolved: all three tests are in `review-fixes-db.test.ts`.
+- **CR-047 — Stop an action on a joined email from changing the shared non-pay task** — resolved: `emailTask` detects a shared task. `ignoreEmail` leaves a note, `retypeAction` refuses, and `linkClientAction` leaves the task in place.
+- **CR-048 — Refuse to guess a client when the sender is on several, and never match a merged client** — resolved: the sender query is `DISTINCT … status <> 'inactive' LIMIT 2` and is treated as ambiguous when two clients match. The domain and name queries exclude inactive clients, and a merge clears `email` and `website` on the dropped client.
+- **CR-049 — Provide a way to record the real policy number after binding** — resolved: an audited `setPolicyNumber` and `policyNumberAction` were added, and `markIssued` requires a real number in place of a `PENDING-` placeholder.
+- **CR-050 — Check certificate wording on every line, or warn that it wasn't checked** — resolved: `verifyWording` checks `lob` plus every `policy_lines` entry, has BOP rules, and warns on lines it can't check (umbrella, and parts of auto and BOP). `renewCertificates` holds any certificate with warnings and raises a task.
+- **CR-051 — Stop net-negative statements from posting phantom cash** — resolved: `post()` swaps negative amounts to the other side, and migration 008 adds a `CHECK` constraint (`NOT VALID`, so older rows aren't checked). A return-only carrier now needs "record return" with a deposit reference, and negative producer statements are refused and net into the next one.
+- **CR-052 — Set `issued_at` on in-force policies so missing-commission detection works** — resolved: `createPolicy` writes `issued_at` for `active` policies, migration 008 backfills it from issued transactions, and a rolled-back test covers it.
 
 ## Coverage notes
-- **Checks:** `npx tsc --noEmit` exited 0. `npm test` passed 136 of 136, with none skipped, so the database-backed tests reached the local database.
-- **Read in full:**
-  - **Docs and config:** `README.md`, the MVP scope, the previous report, all migrations, `Dockerfile`, `fly.toml`, compose, `.env.example`, `next.config.ts`.
-  - **Scripts:** `migrate-core.mjs`, `agent-ledger.ts`, `fly-deploy.sh`, `uat.sh`, `review-run.sh`.
-  - **`src/lib`:** `accounting`, `policies`, `work`, `priority`, `automation`, `certificates`, `reports`, `pdf`, `ai`, `db`, `user`, `email/*`, `client-search`, `claims`, plus the smaller helpers.
-  - **Server actions:** accounting, policies, tasks, inbox, clients, certificates, claims, sales, admin, documents.
-  - **API routes:** inbound email, leads, cron.
-  - **Pages:** accounting pages, My Day, task detail and list, policy detail, client detail, inbox, renewals, certificate detail and new, claim detail, opportunity detail, and the policy forms.
-  - **Tests:** `review-fixes-db.test.ts`.
-- **Partly checked or not read in depth:**
-  - **Left mainly to the security review:** `middleware.ts`, `session`, `basic-auth`, `http`, `throttle`, `login-*`, `agent-reports`, `agent-ledger`, `agent-activity`, `/admin/app-tests`.
-  - **`seed.mjs`:** checked by grep and targeted lines only.
-  - **`uat/**`:** file list and one grep only.
-  - **Other test files:** by grep only.
-  - **Not opened:** remaining report and list pages, most of `components/*`, `fly-users.sh`, `send-test-email.sh`, `review-guard.py`, `review-save.py`.
-  - **`permissions.ts`:** a batched read cut off partway through `user.ts`. I re-read `user.ts` alone, but not `permissions.ts` or the later files in that batch, including `policies/page.tsx` and `certificates/page.tsx`.
-
-  This is therefore short of the full read the brief asks for. The money, email, certificate and policy paths got the depth.
-- **How findings were verified:** by reading the code. The new behavior was not run, because no new tests can be added in a read-only run. CR-056's dates and CR-051's sweep result were worked through by hand against the code.
-- **Dropped from last run's unconfirmed list:**
-  - The empty `web/agent-reports/` folder is not a defect in this run's evidence. The root `.gitignore` keeps `.gitkeep`, and the snapshot's rsync rule excludes `agent-reports/*`, which explains why the file is missing here. I still can't check git itself.
-  - The negative producer statement is now confirmed and is part of CR-051.
-- **Guard limits:** the guard refused two Bash commands that used `..` to reach repository-root files. I read those files with absolute paths through Read, Grep and Glob instead, all inside the snapshot. I did not read any other reviewer's output.
+- **Checks:** `npx tsc --noEmit` exited 0. `npm test` passed 180 of 180, with none skipped or failed, so the database-backed tests reached the local database.
+- **Read in full this run:**
+  - **Docs and previous report:** the previous report, `migrations/008`–`010`, `scripts/migrate-core.mjs`.
+  - **`src/lib`:** `accounting`, `policies`, `work`, `priority`, `automation`, `certificates`, `reports`, `ai`, `assistant`, `email/ingest`, `email/parse`.
+  - **Actions and routes:**
+    - Server actions: `policies`, `accounting`, `inbox`, `clients`, plus the top of `tasks/actions.ts`.
+    - Routes: inbound email, accounting export, documents render, assistant ask.
+    - `.env.example`.
+- **Partly read:**
+  - **`assistant-tools.ts`:** the first 110 lines, then the rest by grep for status filters and balance SQL. The file was too large to read in one pass.
+  - **`pdf.ts`:** from line 140 on.
+  - **Client and invoice pages:** the billing sections only.
+- **Not re-read this run:** the remaining pages and components, `seed.mjs`, `uat/**`, the other test files, `Dockerfile`, `fly.toml` and compose. Where these files hold previous findings, they were re-checked by targeted grep. This run therefore falls short of the full read the brief asks for. The depth went to the money, policy, email and task paths.
+- **Env drift:** the variables the code reads were grepped and compared with `.env.example`, and no drift was found. A shell loop to compare them against `fly.toml` and compose was refused by the review guard, so that comparison wasn't done.
+- **Guard limits:** besides the env loop, the guard refused a command that redirected output to `/tmp` and one that used a relative `..` path. I used the Read and Grep tools inside the snapshot instead.
+- **Independence:** I did not read any other reviewer's output.
+- **How findings were verified:** by reading the code, not by running new code. CR-071's escaping was worked through by hand against Postgres `LIKE` rules.

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>UX-064 · AI box on My Day</title>
+<style>
+body{font:14px/1.4 -apple-system,system-ui,Segoe UI,sans-serif;color:#0f172a;background:#f1f5f9;margin:0;padding:20px}
+h1{font-size:16px;margin:0 0 12px}
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.col h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:0 0 8px}
+.page{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
+.hdr{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px}
+.hdr b{font-size:17px}.sub{font-size:12px;color:#64748b}
+.btn{display:inline-block;border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:4px 10px;font-size:13px}
+.pri{background:#4f46e5;color:#fff;border-color:#4f46e5}
+.ask{display:flex;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:6px;margin-bottom:6px}
+.ask input{flex:1;border:0;font:inherit;color:#94a3b8}
+.chips span{display:inline-block;border:1px solid #e2e8f0;border-radius:99px;padding:1px 8px;font-size:11px;color:#475569;margin:0 4px 10px 0;background:#fff}
+.tiles{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:10px}
+.tile{background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:6px}
+.tile small{display:block;font-size:10px;color:#64748b}.tile b{font-size:16px}
+.grid{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:6px}
+.card h3{font-size:12px;margin:0;padding:6px 10px;border-bottom:1px solid #f1f5f9}
+.row{padding:6px 10px;border-bottom:1px solid #f1f5f9;font-size:12px}
+.row i{font-style:normal;color:#be123c;font-size:11px}
+.hl{outline:2px solid #f59e0b;outline-offset:2px}
+.note{font-size:11px;color:#b45309;margin:4px 0 10px}
+.small{font-size:11px;color:#64748b;padding:6px 10px}
+</style></head><body>
+<h1>UX-064 · Move the AI box out of the queue's way</h1>
+<div class="wrap">
+<div class="col"><h2>Before</h2><div class="page">
+ <div class="hdr"><div><b>Good morning, Marisol</b><div class="sub">Monday, November 9 · 11 tasks need you today</div></div><div><span class="btn">＋ Task</span> <span class="btn pri">Start next task →</span></div></div>
+ <div class="hl">
+ <div class="ask"><input value="Ask the AI Assistant anything" disabled><span class="btn pri" style="opacity:.5">Ask</span></div>
+ <div class="sub">The AI Assistant isn't available right now.</div>
+ </div>
+ <div class="note">▲ Disabled box takes the top slot (no API key set)</div>
+ <div class="tiles"><div class="tile"><small>Overdue</small><b style="color:#e11d48">4</b></div><div class="tile"><small>Due today</small><b style="color:#d97706">7</b></div><div class="tile"><small>Emails</small><b>3</b></div><div class="tile"><small>Chase</small><b>2</b></div><div class="tile"><small>Renewals</small><b>18</b></div><div class="tile"><small>Done</small><b style="color:#059669">5</b></div></div>
+ <div class="grid"><div class="card"><h3>Priority queue</h3>
+  <div class="row">Non-pay: Piedmont Haulers <i>Coverage at risk</i></div>
+  <div class="row">Certificate for Hendrick Brothers</div></div>
+  <div class="card"><h3>Email to triage</h3><div class="row">Re: auto ID cards</div></div></div>
+</div></div>
+<div class="col"><h2>After</h2><div class="page">
+ <div class="hdr"><div><b>Good morning, Marisol</b><div class="sub">Monday, November 9 · 11 tasks need you today</div></div><div><span class="btn">＋ Task</span> <span class="btn pri">Start next task →</span></div></div>
+ <div class="tiles"><div class="tile"><small>Overdue</small><b style="color:#e11d48">4</b></div><div class="tile"><small>Due today</small><b style="color:#d97706">7</b></div><div class="tile"><small>Emails</small><b>3</b></div><div class="tile"><small>Chase</small><b>2</b></div><div class="tile"><small>Renewals</small><b>18</b></div><div class="tile"><small>Done</small><b style="color:#059669">5</b></div></div>
+ <div class="grid"><div class="card"><h3>Priority queue</h3>
+  <div class="row">Non-pay: Piedmont Haulers <i>Coverage at risk</i></div>
+  <div class="row">Certificate for Hendrick Brothers</div>
+  <div class="row">Endorsement: add RAV4</div></div>
+  <div><div class="card"><h3>Email to triage</h3><div class="row">Re: auto ID cards</div></div>
+  <div class="card hl" style="margin-top:8px"><h3>Ask about your work</h3>
+   <div class="ask" style="margin:6px"><input value="e.g. What's at risk this week?" disabled><span class="btn pri">Ask</span></div>
+   <div class="small">Shown only when the assistant is on.</div></div></div></div>
+ <div class="note">▲ Queue starts right under the tiles; the AI box is secondary and absent when off</div>
+</div></div>
+</div></body></html>

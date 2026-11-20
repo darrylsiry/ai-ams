@@ -4,9 +4,9 @@
 change a finding's status to `Accepted`; the next run overwrites everything else. Coding agents: fix
 items top-down by severity and cite the `SEC-NNN` ID.*
 
-- **Run:** 2026-11-03 02:15
-- **Code version:** `f58332c7`
-- **Previous run:** 2026-11-02 22:40
+- **Run:** 2026-11-09 14:08
+- **Code version:** `d7534221`
+- **Previous run:** 2026-11-03 02:15
 
 ## Summary
 
@@ -14,18 +14,14 @@ items top-down by severity and cite the `SEC-NNN` ID.*
 |----------|------|--------------|-------------------|
 | Critical | 0 | 0 | 0 |
 | High | 0 | 0 | 0 |
-| Medium | 4 | 3 | 0 |
-| Low | 6 | 4 | 1 |
+| Medium | 2 | 0 | 1 |
+| Low | 6 | 1 | 2 |
 | Informational | 2 | 0 | 0 |
 
-Nothing Critical or High is open, and `npm audit` is clean. The weakest area is still trust in inbound email, followed by the absence of limits on client credits and commission rates.
+Nothing Critical or High is open, and `npm audit` is clean. Since the last run, three findings were fixed: client credits and commission rates now have limits (SEC-031), task ownership is checked on every path (SEC-034), and the admin pages are gated (SEC-035). Planting a web lead now does less harm (SEC-032 drops to Low).
 
-- **Most urgent fix:** SEC-028 and SEC-030 together. On the Mailgun and SendGrid form-post paths, an attacker with their own domain can pass as a client. On the same paths, an attacker can also pass as staff.
-- **Exploitable today:**
-  - Anyone can flood the queue through the public quote form (SEC-018).
-  - Anyone can plant a contact through the same form (SEC-032), though this has no effect until real email flows.
-  - A signed-in user with `write` can create client credits of any size (SEC-031) and change other people's tasks (SEC-034).
-  - Any signed-in user can open the unguarded admin pages (SEC-035).
+- **Most urgent fix:** inbound email sender trust (SEC-028, SEC-030). It is still the weakest area and must be fixed before Mailgun or SendGrid form posts are connected.
+- **Exploitable today:** anyone can flood the two public forms: the quote form (SEC-018) and the new request-access form (SEC-038).
 
 ## Critical
 
@@ -42,100 +38,51 @@ None.
 - **Live risk:** real-data-only (live-now as soon as Mailgun form posts are pointed at `/api/inbound/email`)
 - **Where:**
   - `web/src/app/api/inbound/email/route.ts:62`
-  - `web/src/lib/email/ingest.ts:143-152,190`
-  - `docs/INBOUND_EMAIL.md:38-48`
+  - `web/src/lib/email/ingest.ts:148-155,193`
   - `web/fly.toml:17`
-- **Problem:** The sender check trusts a result that isn't about the From address (CWE-345 / CWE-290). The code has not changed since the last run.
+- **Problem:** The sender check trusts a result that says nothing about the From address (CWE-345 / CWE-290). The code has not changed.
   - `senderVerified` is true when `X-Mailgun-Dkim-Check-Result === "Pass" && X-Mailgun-Spf === "Pass"`.
-  - Mailgun's DKIM result says that some signature on the message was valid, whatever domain signed it. Its SPF result covers the envelope sender, which the attacker chooses.
-  - Neither result is compared with the `From:` domain.
-  - Once `senderVerified` is true, the unverified notice, the attachment hold and the block on auto-actioning all switch off.
-  - The documentation is also wrong. `docs/INBOUND_EMAIL.md:39` and the `fly.toml` comment say no sender counts as verified until `INBOUND_AUTHSERV_ID` is set. This branch doesn't read that setting.
+  - Mailgun's DKIM result means some signature was valid, for any domain. Its SPF result covers the envelope sender, which the attacker chooses. Neither is compared with the `From:` domain.
+  - A verified sender switches off three protections: the unverified notice, the attachment hold, and the block on marking the email actioned automatically.
+  - The `fly.toml` comment says "Until then no sender counts as verified", meaning until `INBOUND_AUTHSERV_ID` is set. This branch never reads that setting.
 - **Evidence:**
-  - `(s("X-Mailgun-Dkim-Check-Result") === "Pass" && s("X-Mailgun-Spf") === "Pass")`
-  - **Trigger:** from a server on `attacker.example` with valid SPF and DKIM, send `From:` a client contact, subject `Please cancel my policy`, with a PDF attached.
+  - The code: `(s("X-Mailgun-Dkim-Check-Result") === "Pass" && s("X-Mailgun-Spf") === "Pass")`.
+  - **Trigger:** from `attacker.example`, with valid SPF and DKIM, send `From:` a client contact, subject `Please cancel my policy`, with a PDF attached.
   - **Result:** a `CANC-REQ` task with no warning, the PDF filed on the client, and email status `actioned`.
-  - I relied on Mailgun's documented meaning of these fields and did not confirm which fields it actually posts.
+  - I relied on Mailgun's documented meaning of these fields and did not confirm them against a real post.
 - **Fix:**
-  - Stop using those two fields as proof of the From address.
-  - Take `Authentication-Results` from Mailgun's `message-headers` field and pass it through `senderAuthenticated()`. If that isn't possible, treat Mailgun form posts as unverified.
-  - Update the documentation to match.
-- **Verify:** A `review-fixes-db.test.ts` case posts a Mailgun-shaped form with `from=insured@clientco.example`, both fields set to `Pass`, and no aligned `Authentication-Results`. Expect `sender_verified = false`, the attachment's `client_id IS NULL`, and email status `new`.
+  - Stop treating those two fields as proof of the From address.
+  - Instead, pass the `Authentication-Results` header from Mailgun's `message-headers` field through `senderAuthenticated()`.
+  - If that header isn't available, treat Mailgun form posts as unverified.
+  - Update `docs/INBOUND_EMAIL.md` and the `fly.toml` comment to match.
+- **Verify:**
+  - A DB test posts a Mailgun-shaped form with `from=insured@clientco.example`, both fields `Pass`, and no aligned `Authentication-Results`.
+  - It expects `sender_verified = false`, attachment `client_id IS NULL`, and email status `new`.
 
 ### SEC-030 — Check the sender and store the sender from the same parsed address
-- **Status:** New
+- **Status:** Open (first seen 2026-11-03)
 - **Live risk:** real-data-only (live-now as soon as SendGrid or Mailgun form posts are connected)
 - **Where:**
   - `web/src/app/api/inbound/email/route.ts:61-62,65`
   - `web/src/lib/email/parse.ts:56-66,130`
-  - `web/src/lib/email/ingest.ts:31-33,102`
-- **Problem:** The route checks one address and the app stores another, so a sender can be verified as themselves and recorded as someone else (CWE-290, parser differential).
-  - `route.ts:61` checks the first entry from `parseAddressList(from)`.
-  - `fromGeneric` then calls `parseAddress()` on the whole header. Its regex treats everything before the last `<...>` as a display name.
-  - Staff addresses are affected too. `route()` treats a verified sender whose address matches a staff user as a trusted forwarder.
+  - `web/src/lib/email/ingest.ts:32-33,105-110`
+- **Problem:** The route checks one address and the app stores another, so a sender can be verified as themselves and recorded as someone else (CWE-290, parser differential). Unchanged.
+  - `route.ts:61` checks the first entry of `parseAddressList(from)`.
+  - `fromGeneric` then runs `parseAddress()` on the whole header, and `ADDR_RE` treats everything before the last `<…>` as a display name.
+  - When a verified sender matches a staff email, `route()` treats them as a trusted forwarder.
 - **Evidence:**
-  - **Trigger:** on the SendGrid form path, send from your own DKIM-signed domain with `From: evil@attacker.example, Marisol Rivera <mrivera@agency.example>`.
-  - `parseAddressList` returns `evil@attacker.example` first, and `dkim={@attacker.example : pass}` matches it, so `senderVerified` is true.
-  - `parseAddress` matches `ADDR_RE`, giving `mrivera@agency.example`, so `email.from` is staff.
+  - **Trigger:** on the SendGrid form path, send from your own DKIM-signed domain with `From: evil@attacker.example, Marisol Rivera <mrivera@agency.example>` and a matching `dkim={@attacker.example : pass}`.
   - **Result:**
-    - `forwardedBy` is set, so `trustedStaff` is true.
-    - A `From:` line in the body picks the client.
-    - Attachments are filed on the client with no hold.
-    - The attacker's text appears as "Note from Marisol Rivera".
-  - I traced this through the code only. I did not confirm that SendGrid passes a multi-address `From` unchanged.
+    - `senderVerified` is true, and `email.from` is the staff address.
+    - So `forwardedBy` is set and `trustedStaff` is true.
+    - A `From:` line in the body picks the client, and attachments are filed with no hold.
+    - The attacker's text shows as "Note from Marisol Rivera".
+  - I traced this through the code only.
 - **Fix:**
-  - In the form branch, parse `from` once and pass the resulting address on, rather than the raw header.
+  - In the form branch, parse `from` once and pass that address on, not the raw header.
   - Treat a `From` with more than one address as unverified.
-  - Make `parseAddress` refuse a display name that contains an unquoted comma or `@`.
-- **Verify:** A test posts the form above and expects `sender_verified = false`, `forwarded_by_user_id IS NULL`, and the attachment's `client_id IS NULL`.
-
-### SEC-031 — Bound client credits and commission rates, and require accounting approval for them
-- **Status:** New
-- **Live risk:** live-now (needs a signed-in user with `write`)
-- **Where:**
-  - `web/src/app/(app)/policies/actions.ts:61,83,118`
-  - `web/src/lib/policies.ts:112-117,141-143,188`
-  - `web/src/lib/accounting.ts:198-217,443-475`
-- **Problem:** A user with `write` can create money obligations of any size, with no check on the value and no separation of duties (CWE-840, CWE-20). README gives CSRs and producers "work clients and policies", and money posting to accounting.
-  - **Return premium:** on an agency-bill policy, `cancelAction` passes `return_premium` straight through. It is not compared with the premium or with what the client paid. `completeCancellation` then posts a credit invoice and a journal.
-  - **Endorsements:** `endorseAction` with `issue_now` and `sign=-` does the same, and can take `premium` below zero.
-  - **Trust effect:** the credit counts as owed in `sweepable()` and offers a one-click Refund from trust.
-  - **Commission rate:** `commission_pct` comes from the form on `createPolicyAction` and has no range check. The only database limit is `numeric(5,2)`. `buildStatement` pays producer splits from the commission this produces, so a producer can raise the base of their own pay.
-- **Evidence:**
-  - `returnPremium: n(f, "return_premium")` leads to `invoiceLinesFor(p.id, -Math.abs(returnPremium), c)`.
-  - **Trigger:** a CSR records a cancellation on an agency-bill policy with $1,000 premium and `return_premium=50000`. A $50,000 client credit appears with a Refund button for accounting.
-  - A person in accounting must still click Refund, and `invoice.created` audits the amount. This is therefore fraud or error needing a second step, not direct theft.
-- **Fix:**
-  - Refuse a return premium above the term's premium in `cancelPolicy`.
-  - Refuse an endorsement that takes premium below zero.
-  - Above an agency-set threshold, hold credits until someone with `accounting` approves them.
-  - Limit `commission_pct` to 0–100, and flag a rate that differs from the carrier's agreement on the policy-check task.
-- **Verify:**
-  - A DB test as a CSR with `return_premium` greater than premium expects a rejection and no new invoice.
-  - A `commission_pct` of 150 is rejected.
-
-### SEC-032 — Keep unconfirmed web leads out of email sender matching
-- **Status:** New
-- **Live risk:** real-data-only (the lead can be planted today; the effect starts once real email flows)
-- **Where:**
-  - `web/src/app/api/leads/route.ts:35-37`
-  - `web/src/lib/email/ingest.ts:57-60,64-68`
-- **Problem:** An unauthenticated visitor can change where a real client's email goes (CWE-345).
-  - The quote form stores any `email` value as a client and primary contact, with no validation or confirmation.
-  - `matchClient` then trusts contacts with no filter on client status and no ordering. The `contacts` branch of its `UNION ALL ... LIMIT 1` runs first.
-- **Evidence:**
-  - **Trigger:** a real client has an address only on `clients.email`, which happens when it was created without a primary contact. Submit `/quote` with that address and any name.
-  - **Result:** that client's verified mail now matches the fake prospect as "sender is a client contact" at 0.9 confidence.
-    - The task goes to the prospect's account manager, not the client's.
-    - Attachments are filed on the prospect.
-    - The email is marked `actioned`, so it doesn't reach triage.
-  - **Domain matching:** a lead using `x@clientco.example` gives two clients on that domain, which switches off domain matching for it (`byDomain.length === 1`).
-  - The attacker can't read what is misfiled. The harm is misrouted cancellation, claim and billing mail.
-- **Fix:**
-  - In `matchClient`, ignore clients and contacts from `source = 'Website quote form'` until staff confirm them.
-  - Prefer insured clients with an explicit `ORDER BY`.
-  - Send to triage when an address matches more than one client.
-- **Verify:** A DB test creates an insured client with `clients.email = a@x.example`, posts a lead with the same address, then ingests a verified email from it. Expect the insured client to match.
+  - Make `parseAddress` refuse a display name that contains an unquoted `,` or `@`.
+- **Verify:** A test posts the form above and expects `sender_verified = false`, `forwarded_by_user_id IS NULL`, and attachment `client_id IS NULL`.
 
 ## Low
 
@@ -143,127 +90,137 @@ None.
 - **Status:** Open (first seen 2026-11-01)
 - **Live risk:** local-only
 - **Where:**
-  - `scripts/review-run.sh:92-100,136-148`
+  - `scripts/review-run.sh:81,93-100,136-148`
   - `scripts/review-guard.py:100-113`
-  - `web/src/components/markdown.tsx:15-18`
-- **Problem:** The confinement still has gaps a steered agent could use (CWE-693). I did not attempt any of them; this rests on reading the profile and the guard.
-  - **The guard can be rewritten (new this run):** the guard and `.claude/settings.json` live inside the snapshot, and the sandbox allows writing to the whole snapshot (`(allow file-read* file-write* (subpath "$WS"))`). A script that gets past the text matching could overwrite the guard that checks later commands.
-  - **Writable folders:** the profile allows read and write on `~/.claude` (except `projects/` and `history.jsonl`) and on `~/.docker`. Writing `~/.claude/settings.json` could add a hook that runs unsandboxed in the owner's next normal session.
-  - **Write detection:** the regex misses Python `Path.write_bytes` and Node `appendFileSync`.
-  - **Path tricks:** a path built at run time gets past the `~`/`$HOME` check, for example `os.environ['HO'+'ME']`.
-  - **Network:** outbound access is fully open, and the Claude credentials are readable, so anything read could be sent out.
-  - **Report links (new this run):** `Markdown` renders report links with no scheme filter on an admin-only page. React 19 and the page's CSP stop `javascript:` links, so what remains is a phishing link in a steered report.
+  - `web/src/components/markdown.tsx:16-18`
+  - `web/src/app/(app)/admin/app-tests/[agent]/page.tsx:30`
+- **Problem:** The confinement still has gaps that a steered agent could use (CWE-693). None of this has changed, and I attempted none of it.
+  - **Guard can be rewritten:** the guard is copied into `$WS/.claude/hooks/`, and the profile allows writing anywhere in `$WS` (`(allow file-read* file-write* (subpath "$WS"))`). A script that gets past the text matching could overwrite the guard that checks later commands.
+  - **Writable folders:** `~/.claude` is writable except `projects/` and `history.jsonl`, so `~/.claude/settings.json` hooks could run unsandboxed in the owner's next session. `~/.docker` is writable for every agent.
+  - **Write detection:** the guard's regex misses Python `Path.write_bytes` and Node `appendFileSync` / `fs.promises`.
+  - **Network:** outbound network is fully open.
+  - **Report links:** the App Tests report page renders `Markdown` without `appLinksOnly`, so report links have no scheme filter. React 19 and the CSP block `javascript:`, so what remains is a phishing link in a steered report.
 - **Evidence:**
   - `(allow file-read* file-write* (subpath "$HOME/.claude") … (subpath "$HOME/.docker"))`
   - `(allow file-read* file-write* (subpath "$WS"))`
-  - The write regex has no `write_bytes` or `appendFile`, and there is no `network-outbound` rule.
+  - No `network-outbound` rule.
+  - The write regex has no `write_bytes` or `appendFile`.
 - **Fix:**
-  - Add a later `(deny file-write* …)` rule for `$WS/.claude`, or keep the hook and settings outside the snapshot.
-  - Limit `~/.claude` writes to what the CLI needs, and deny `settings.json`, `agents/`, `hooks/` and `commands/`.
-  - Drop `~/.docker` for agents that don't run docker.
-  - Route traffic through a proxy that allows only the API host.
-  - Add `write_bytes`, `appendFile`, `copyFile` and `fs.promises` to the guard as a second layer.
-  - Allow only `http`, `https`, `mailto` and relative links in `Markdown`.
-- **Verify:** From inside an agent run, `python3 -c "import pathlib;pathlib.Path('.claude/hooks/x').write_bytes(b'')"` and a write under `~/.claude` both fail with a sandbox denial, and an outbound request to another host fails.
+  - Add `(deny file-write* (subpath "$WS/.claude"))` after the `$WS` allow.
+  - Narrow `~/.claude` writes, denying `settings.json`, `agents/`, `hooks/` and `commands/`.
+  - Drop `~/.docker` for agents other than UAT.
+  - Proxy traffic so only the API host is reachable.
+  - Add `write_bytes`, `appendFile`, `copyFile` and `fs.promises` to the guard.
+  - Allow only `http`, `https`, `mailto` and relative links in report Markdown.
+- **Verify:** From inside an agent run, these all fail with a sandbox denial:
+  - `python3 -c "import pathlib;pathlib.Path('.claude/hooks/x').write_bytes(b'')"`
+  - a write under `~/.claude`
+  - a request to another host
 
 ### SEC-018 — Harden the public quote endpoint against queue flooding
 - **Status:** Open (first seen 2026-11-01)
 - **Live risk:** live-now
 - **Where:** `web/src/app/api/leads/route.ts:13-25,38`
-- **Problem:** An unauthenticated endpoint that writes records can be abused (CWE-799). Nothing has changed since the last run.
+- **Problem:** An unauthenticated endpoint that writes records can be abused (CWE-799). Unchanged.
   - There is no CAPTCHA or confirmation step.
-  - The per-address limit of 5 an hour lives in process memory, and machine restarts clear it.
-  - Six addresses are enough to use up the hour's 30 global slots, after which real prospects get "Too many requests — please call us".
-  - `coverage` values are not limited in length. They go into the task description unbounded, up to the 32 MB middleware body limit.
-- **Evidence:** `if (lastHour!.n >= HOURLY_CAP) return 429` and `description: \`Interested in: ${f.getAll("coverage").join(", ") || "not specified"}…\``.
+  - The per-address limit of 5 an hour lives in process memory, and restarts clear it.
+  - The address comes from `fly-client-ip` or, failing that, `x-forwarded-for` without a trust check.
+  - Six addresses use up the hour's global cap of 30, after which real prospects get "Too many requests".
+  - `coverage` values are unbounded and go straight into the task description.
+- **Evidence:**
+  - `if (lastHour!.n >= HOURLY_CAP) return 429`
+  - `` description: `Interested in: ${f.getAll("coverage").join(", ") …` ``
 - **Fix:**
-  - Add a Turnstile or hCaptcha check, or an email-confirmation link, before any record is created. A CAPTCHA needs matching CSP changes in `middleware.ts`.
+  - Add Turnstile or hCaptcha, or an email-confirmation link, before creating records. Update the CSP in `middleware.ts` to allow it.
   - Accept only the six known coverage values.
   - Reject bodies over about 20 KB.
+  - Use `clientInfo()` for the address.
 - **Verify:** A POST without a valid CAPTCHA token creates nothing. A POST with an unknown or 1 MB `coverage` value is rejected.
 
-### SEC-034 — Apply the task-ownership rule on every path that changes a task
-- **Status:** New
-- **Live risk:** live-now (needs a signed-in user with `write`)
+### SEC-032 — Keep unconfirmed web leads out of email sender matching
+- **Status:** Open (first seen 2026-11-03). Downgraded from Medium: the main collision case is now handled.
+- **Live risk:** real-data-only
 - **Where:**
-  - `web/src/app/(app)/inbox/actions.ts:17-48`
-  - `web/src/app/(app)/policies/actions.ts:20-28,36-44`
-  - `web/src/app/(app)/certificates/actions.ts:68-70`
-  - `web/src/app/(app)/claims/actions.ts:33-35`
-  - `web/src/app/(app)/tasks/actions.ts:114`
-  - `web/src/lib/policies.ts:321-326`
-- **Problem:** Task ownership is enforced in `tasks/actions.ts` and `ignoreAction`, but other paths skip it (CWE-862).
-  - `retypeAction` rewrites another person's task subject, code and priority.
-  - `linkClientAction` moves its owner.
-  - `closeTask`, `waitOnCarrier`, the certificate `issueAction` and `createClaimAction` complete or park whatever `task_id` is posted.
-  - `noteAction` accepts `kind=system` from the form. The UI never offers it, and it lets a user forge a system note.
-  - `taskWaitingOnTransaction` trusts such notes, so a forged note could tie someone else's task to an endorsement and close it when that endorsement is issued.
-  - The impact is limited. These users can already change client and policy records, so what's lost is workflow integrity.
+  - `web/src/app/api/leads/route.ts:35-37`
+  - `web/src/lib/email/ingest.ts:59-72`
+- **Problem:** An unauthenticated visitor can still change how a real client's email is matched (CWE-345).
+  - `matchClient` now reads `LIMIT 2` and needs exactly one match, so a lead with the same address as a real client no longer wins.
+  - **Remaining case:** a real client matched only by **domain**, at 0.75, whose sender's address isn't on file.
+    - A quote request with that address (`bob@clientco.example`) makes the fake prospect the single "sender is a client contact" match, at 0.9.
+    - Verified mail from Bob then goes to the prospect's producer, and attachments are filed on the prospect.
+  - **Also:** a lead using a real contact's exact address makes `several` true. That turns off domain and name matching for that sender, so their mail always lands in triage.
 - **Evidence:**
-  - `retypeAction` has only `requirePerm("write")` and then runs `UPDATE activities SET code = $2, priority = $3, subject = …`, while `ignoreAction` checks `mayActOn`.
-  - **Trigger:** a CSR posts `retypeAction` with another account manager's `NONPAY` email id, `code=EMAIL-IN` and a new subject. The urgent task is downgraded and renamed.
+  - The query: `SELECT DISTINCT c.id FROM clients c LEFT JOIN contacts ct … WHERE c.status <> 'inactive' AND (lower(ct.email) = $1 OR lower(c.email) = $1) LIMIT 2`.
+  - Web leads are stored as `status = 'prospect'`, which this filter includes.
 - **Fix:**
-  - Call `mayActOn` for the linked task in `retypeAction` and `linkClientAction`.
-  - Check it before `completeTask` or `setWaiting` in the `task_id` shortcuts. Leave the task open, with a message, when it fails.
-  - In `noteAction`, allow only `note`, `call` and `email_out`.
-- **Verify:**
-  - A test as a CSR who doesn't own the task expects `retypeAction` to refuse and the row to stay unchanged.
-  - The same applies to `createClaimAction` with another user's `task_id`: the task stays open.
-  - `noteAction` with `kind=system` is refused.
-
-### SEC-035 — Gate the admin pages that only look restricted
-- **Status:** New
-- **Live risk:** live-now (any signed-in user, including `readonly`)
-- **Where:**
-  - `web/src/app/(app)/admin/users/page.tsx:11-17,33-34`
-  - `web/src/app/(app)/admin/carriers/page.tsx:12-16,26`
-  - `web/src/app/(app)/admin/settings/page.tsx:11-14`
-  - `web/src/app/(app)/admin/page.tsx:10,13-14`
-- **Problem:** The Admin menu marks these pages `admin: true`, but that only dims the tile. The pages themselves have no check (CWE-862).
-  - **Users page:** shows every username, role, email, who has PII access, which profiles have no password, and last activity. `/admin/users/[id]` says "Only administrators can view other users".
-  - **Carriers page:** shows commission agreements and in-force premium by carrier. The equivalent book report needs `reports.all`.
-  - **Settings page:** shows thresholds and which Claude assists are on, read-only.
-  - No client data or secrets appear. The usernames do help someone guessing passwords, and the page shows who is worth phishing.
-- **Evidence:** none of the three pages calls `denied(...)`. `admin/audit`, `admin/system` and `reports/users` all do.
-- **Fix:**
-  - Add `denied("admin", …)` to all three pages. Allow `reports.all` on carriers if staff need it.
-  - Staff need a carrier list for their work, so give them a smaller one without commission or premium.
-- **Verify:** Signed in as a CSR or `readonly`, each page shows the NoAccess panel and the HTML has no usernames or commission rates.
+  - In `matchClient`, ignore clients with `source = 'Website quote form'` and status `prospect` until staff confirm them.
+  - Or rank insured clients first, and send any email-versus-domain disagreement to triage.
+- **Verify:** A DB test has an insured client with website `clientco.example` and a web lead with `bob@clientco.example`. A verified email from Bob matches the insured client, or goes to triage, but not to the lead.
 
 ### SEC-036 — Validate the recipient before sending a reply
-- **Status:** New
-- **Live risk:** real-data-only (needs `SMTP_URL` set)
+- **Status:** Open (first seen 2026-11-03)
+- **Live risk:** real-data-only (needs `SMTP_URL`)
 - **Where:**
-  - `web/src/app/(app)/inbox/actions.ts:84-93`
-  - `web/src/lib/email/parse.ts:62-65,216`
-  - `web/src/lib/email/send.ts:20-21,39`
-- **Problem:** `send.ts:20` says typed addresses go through `isEmailAddress` so a comma can't add a recipient, but `replyAction` sends to an address taken from the email without that check (CWE-20).
-  - `parseAddress` accepts commas inside an address.
-  - A forged forward can therefore plant a hidden second recipient in `original_from_addr`, and nodemailer will send to both.
+  - `web/src/app/(app)/inbox/actions.ts:83-96`
+  - `web/src/lib/email/parse.ts:56-65,216`
+  - `web/src/lib/email/send.ts:21,39`
+- **Problem:** `replyAction` sends to `original_from_addr ?? from_addr` without `isEmailAddress` (CWE-20). `parseAddress` still accepts commas inside `<…>`, so a forged forward can plant a second, hidden recipient. Unchanged.
 - **Evidence:**
-  - **Trigger:** an outsider sends subject `Fwd: x` with a body line `From: Jane <jane@clientco.example,spy@evil.example>` and the client's policy number.
-  - `detectForward` stores the whole string as the address. When staff reply, both addresses receive it.
-  - The combined string is shown in the UI and the task carries the "forwarded by someone outside the agency" notice, so an attentive reader could spot it.
+  - **Trigger:** subject `Fwd: x`, with the body line `From: Jane <jane@clientco.example,spy@evil.example>` and the client's policy number.
+  - `detectForward` stores the combined string, and nodemailer sends the staff reply to both addresses.
 - **Fix:**
-  - In `replyAction`, refuse any `to` that fails `isEmailAddress`.
+  - In `replyAction`, refuse a `to` that fails `isEmailAddress`.
   - Make `parseAddress` reject addresses containing `,` or `;`.
-  - Show a warning beside the Reply box when the recipient came from forwarded text rather than a verified sender.
-- **Verify:** A test ingests the message above, and `replyAction` sends nothing and returns an error. A unit test confirms `parseAddress("Jane <a@x.example,b@y.example>")` returns null.
+  - Warn beside Reply when the recipient came from forwarded text.
+- **Verify:**
+  - `parseAddress("Jane <a@x.example,b@y.example>")` returns null.
+  - `replyAction` on such an email sends nothing and shows an error.
 
 ### SEC-037 — Pin the base image and control install scripts
-- **Status:** New
+- **Status:** Open (first seen 2026-11-03)
 - **Live risk:** live-now (build-time supply chain)
-- **Where:** `web/Dockerfile:3,6,10`, `web/package.json:35-37`
-- **Problem:** The build depends on a moving image tag and runs dependency install scripts (CWE-1357).
-  - `FROM node:22-alpine` is a moving tag in both stages.
-  - `RUN npm ci` runs install scripts during the build.
-  - I found nothing in the repo that reads the `allowScripts` block in `package.json`, and I did not confirm that npm honours it, so it may give no protection.
-  - App dependencies themselves are pinned exactly, with a lock file. `postcss` has a caret override, and `uat/package.json` has `@types/node: ^22`, a dev-only dependency.
+- **Where:** `web/Dockerfile:3,6,10`, `web/package.json:35-40`
+- **Problem:** The image build depends on things that can change without notice (CWE-1357). Unchanged.
+  - Both stages use the moving tag `FROM node:22-alpine`.
+  - `RUN npm ci` runs dependency install scripts.
+  - Nothing I found enforces the `allowScripts` block in `package.json`.
+  - `postcss` has a caret override.
 - **Evidence:** `FROM node:22-alpine AS build`, `RUN npm ci`.
 - **Fix:**
-  - Pin both stages to `node:22-alpine@sha256:…` and update them deliberately.
-  - Use `npm ci --ignore-scripts`, then run only the rebuilds the build needs explicitly.
+  - Pin both stages to `node:22-alpine@sha256:…`.
+  - Use `npm ci --ignore-scripts`, then run the rebuilds the build needs explicitly (for example `@tailwindcss/oxide`).
+  - Pin `postcss` exactly.
 - **Verify:** The Dockerfile names a digest, and a build with scripts ignored still passes.
+
+### SEC-038 — Bound the public request-access form
+- **Status:** New
+- **Live risk:** live-now
+- **Where:**
+  - `web/src/app/request-access/actions.ts:17-38`
+  - `web/src/lib/access-requests.ts:9,50-56,64-82`
+  - `web/src/lib/access-request-store.ts:18-31,52`
+  - `web/src/app/(app)/reports/users/page.tsx:24,38-42`
+  - `web/src/lib/basic-auth.ts:39`
+- **Problem:** A new unauthenticated form writes rows and sends email for the visitor (CWE-799, CWE-770). Its only limit is per network.
+  - **Rate limits:** 3 requests per IPv4 address or IPv6 /64 per hour, and 30 notice emails per day across everyone. There is no global row cap and no CAPTCHA, only a hidden-field honeypot.
+  - **Burying real requests:** someone with a handful of addresses can use up the day's 30 emails. They can also push genuine requests off the admin list, which shows only the newest 50.
+  - **Phishing channel:** each email goes to the owner from the app's own sender (`access@INBOUND_EMAIL_DOMAIN`). The attacker chooses its `Reply-To`, and the subject and body carry their name and company text.
+  - **No retention:** rows hold an outsider's name, email, IP and user agent with no retention limit.
+- **Evidence:**
+  - The limits: `LIMITS = { perAddressPerHour: 3, emailsPerDay: 30 }`.
+  - The list: `listAccessRequests(limit = 50)`.
+  - The email: `replyTo: { name: r.name, address: r.email }` and `` subject: `Access request: ${r.name}…` ``.
+  - **Trigger:** 17 IPv6 /64s × 3 requests use up the day's email cap. Repeating that hides earlier requests from Reports > Users.
+- **Fix:**
+  - Add a CAPTCHA (and the matching CSP) or a confirm-your-email step before the owner is emailed.
+  - Add a global hourly cap on stored rows.
+  - Page the admin list, and show a count of requests that were not emailed.
+  - Mark the email clearly as unverified visitor input, and keep the visitor's text out of the subject.
+  - Set a retention period for `access_requests`.
+- **Verify:**
+  - A DB test inserting more than the global cap in an hour refuses further requests.
+  - The admin page can reach request 51 and beyond.
+  - The notice subject has no submitted text.
 
 ## Informational
 
@@ -271,80 +228,93 @@ None.
 - **Status:** Open (first seen 2026-11-01)
 - **Live risk:** real-data-only
 - **Where:**
-  - `web/migrations/001_core.sql:677-696`
+  - `web/migrations/001_core.sql:693-696`
   - `web/src/instrumentation-node.ts:5`
   - `web/src/lib/db.ts:8`
-- **Problem:**
-  - Migrations and the app use one `DATABASE_URL` role that owns the tables. It can run `ALTER TABLE audit_events DISABLE TRIGGER`, so the triggers stop mistakes but not a compromised process.
-  - `ledger_entries` blocks only DELETE, so a row's amount can be changed with UPDATE. `mergeClientAction` and `markExportedAction` both legitimately update other columns on it.
+- **Problem:** Unchanged; migrations 008–010 add no grants.
+  - Migrations and the app share one `DATABASE_URL` role that owns the tables. That role can `DISABLE TRIGGER`, so the triggers stop mistakes but not a compromised process.
+  - `ledger_entries` only blocks DELETE. Migration 008 adds a non-negative CHECK, but a row's amount can still be changed with UPDATE.
   - `audit_events` keeps the first 120 characters of every non-confidential note forever.
-  - Retention and erasure for audit and sign-in data still need a decision.
+  - `access_requests` and `assistant_log` have no retention.
 - **Fix:**
-  - Before loading real data, run migrations as an owner role and the app as a role limited to reading and writing rows.
-  - On `audit_events` and `login_events`, grant the app role only INSERT and SELECT, plus UPDATE of `geo` and `geo_source`.
+  - Run migrations as an owner role, and the app as a role that can only read and write rows.
+  - On `audit_events` and `login_events`, grant the app INSERT and SELECT only, plus UPDATE of `geo` and `geo_source`.
   - On `ledger_entries`, grant column-level UPDATE only on `exported_batch` and `client_id`.
-  - Decide a retention policy.
+  - Decide retention for audit, sign-in, access-request and assistant data.
 
 ### SEC-022 — Decide and document what client data may go to Anthropic
 - **Status:** Open (first seen 2026-11-01)
 - **Live risk:** real-data-only
 - **Where:**
-  - `web/src/lib/ai.ts:98-104,141-185`
-  - `web/src/lib/redact.ts:24-30`
-  - `web/src/lib/settings.ts:16`
-  - `web/src/app/(app)/accounting/actions.ts:84`
+  - `web/src/lib/ai.ts:97-108,141-149,176-184`
+  - `web/src/lib/email/ingest.ts:167,183`
+  - `web/src/app/(app)/accounting/actions.ts:83-91`
+  - `web/src/lib/assistant-tools.ts:73-77,119-137`
+  - `web/src/lib/redact.ts:24-33`
 - **Problem:**
   - **Unchanged:**
-    - `policy_check` and `statement` default to off. When switched on, they send whole PDFs unfiltered.
-    - `scrubText` misses identifiers with no label, such as `NC123456789`.
-    - The contractual and data-processing position has not been recorded.
-    - Policy-check and statement documents are sent as plain blocks, outside the `<untrusted>` wrapper the system rule describes.
-    - `newStatementAction` ignores the model's `statement_total`, so nothing cross-checks the extraction. A person must still post the draft, and the deposit check at posting does catch a mismatch.
-  - **Also noted this run:**
-    - `classifyEmailAI` puts `Matched client: ${ctx.client?.name}` in the prompt outside the wrapper. That name can come from the public quote form (300 characters), so a visitor who also emails from that address gets their own text into the trusted section. The rule that the model can't alone make a task urgent, and the limits on policy numbers and due dates, keep the impact small.
-    - The model's `auto_reply: true` sets the email to `ignored` with no task, so a crafted email can hide itself from the queue. An attacker gains little by hiding their own email, but the rule-based check applied to `urgent` isn't applied here.
+    - `policy_check` and `statement` send whole PDFs unfiltered when switched on. Those documents go in plain blocks, with no text saying they are untrusted.
+    - `scrubText` misses identifiers that carry no label.
+    - The contractual position with Anthropic is not recorded.
+    - `classifyEmailAI` still puts `Matched client: ${ctx.client?.name}` outside the `<untrusted>` wrapper. That name can come from the public quote form.
+    - The model's `auto_reply: true` still marks an email `ignored` with no task and no rule check.
+    - `newStatementAction` ignores the model's `statement_total`.
+  - **New this run (AI Assistant):** most outside free text is wrapped with `ext()`, but some names a public visitor controls are returned raw.
+    - Raw fields: client names, contact names, and task subjects (`taskLine`, `search_app`).
+    - The quote form sets both the client name and the task subject `Website quote request: <name>`.
+    - The system prompt does declare all tool results to be data, and answer links are limited to app routes (`isAppLink`). So the effect is limited to misleading text in an answer.
 - **Fix:**
   - Record the Anthropic terms in use (commercial or zero-retention) before loading real data.
-  - Add a text block telling the model the attached document is untrusted data.
-  - Put the client name inside the `untrusted()` wrapper.
+  - Add a text block telling the model that attached documents are untrusted data.
+  - Wrap the client name in `untrusted()` in the email classifier.
   - Honour `auto_reply` only when the keyword rules agree.
-  - Keep the extracted `statement_total` and flag the draft when it differs from the sum of the lines.
+  - Keep the extracted `statement_total` and flag a draft whose lines don't add up to it.
+  - In assistant tools, pass client and contact names and task subjects from web leads through `ext()`.
 
 ## Accepted risks
 None.
 
 ## Resolved since last run
-- **SEC-029 — End a login's sessions when its password changes** — resolved:
-  - Sessions now carry a `loginTag`, keyed on the login's name and password, and middleware rejects the cookie when it no longer matches.
-  - `endSessionsAction` lets an administrator sign someone out everywhere without deactivating them.
+- **SEC-031 — Bound client credits and commission rates, and require accounting approval for them** — resolved. One part, the approval step above a threshold, was not built. That is now a choice for the agency rather than a defect.
+  - `cancelPolicy` refuses a return premium above the term's premium.
+  - `applyIssuedEndorsement` refuses a change that takes premium below zero.
+  - `createPolicy` requires a commission rate between 0 and 100%.
+  - DB tests cover all three (`review-round3-db.test.ts:200-202`).
+- **SEC-034 — Apply the task-ownership rule on every path that changes a task** — resolved.
+  - `retypeAction` and `linkClientAction` call `mayActOn`.
+  - The task shortcuts go through `completeLinkedTask`, and `waitOnCarrier` checks ownership.
+  - `noteAction` allows only the `note`, `call` and `email_out` kinds, so system notes can no longer be forged.
+- **SEC-035 — Gate the admin pages that only look restricted** — resolved.
+  - `admin/users` and `admin/settings` call `denied("admin", …)`.
+  - `admin/carriers` calls `denied("reports.all", …)`, which matches the assistant's `list_carriers` tool.
 
 ## Coverage notes
 - **`npm audit --omit=dev --json`:** ran. 0 vulnerabilities across 70 production dependencies (162 in total).
-- **Read in full:**
-  - **Authentication:** `middleware.ts`, `basic-auth.ts`, `session.ts`, `session-state.ts`, `user.ts`, `permissions.ts`, `throttle.ts`, `http.ts`, `login-meta.ts`, `login-events.ts`, the sign-in and sign-out code.
-  - **Public and API routes:** every `api/*` route and the quote page.
-  - **Route handlers:** documents, render, report CSV, GL export, client lookup, merge counts, mockups, `tasks/next`.
-  - **Server actions:** root, tasks, inbox, clients, admin, accounting, policies, certificates, claims, sales, documents.
-  - **Libraries:** `email/parse.ts`, `email/ingest.ts`, `email/rules.ts`, `email/send.ts`, `ai.ts`, `redact.ts`, `settings.ts`, `work.ts`, `accounting.ts`, `policies.ts`, `certificates.ts`, `automation.ts`, `pdf.ts`, `reports.ts`, `producer-reports.ts`, `csv.ts`, `audit.ts`, `client-search.ts`, `db.ts`, `agent-activity.ts`, `agent-reports.ts`, `agent-ledger.ts`, `markdown.ts`, `url.ts`, `form-state.ts`, `components/markdown.tsx`, `components/gate.tsx`.
-  - **Pages:** client detail, client edit and form, inbox, inbox detail, simulator, task detail, search, app layout, `admin/page`, users list, user detail and form, settings, carriers, system, audit, signins, both App Tests pages.
-  - **Configuration:** `next.config.ts`, `Dockerfile`, `.dockerignore`, `fly.toml`, `package.json`, `.env.example`, `docker-compose.yml`, `uat/docker-compose.uat.yml`, `.gitignore`.
-  - **Scripts and tooling:** `fly-deploy.sh`, `fly-users.sh`, `send-test-email.sh`, `uat.sh`, `review-run.sh`, `review-save.py`, `review-guard.py`, `.claude/settings.json`, `web/scripts/migrate-core.mjs`, `web/scripts/agent-ledger.ts`, `uat/tests/guard.ts`, `uat/playwright.config.ts`, `uat/package.json`, migration 004.
-  - **Other:** `docs/INBOUND_EMAIL.md`.
-- **Read in part or checked by search only:**
-  - Remaining pages (sales, claims, certificates, renewals, reports, accounting, policy lists, tasks list, My Day, `policies/new`): searched for permission gates, `href` sinks, dynamic SQL and PII columns. The policy detail page was read only at its header and PII query. `clients/page.tsx` was read to line 40, which confirmed the sort column comes from a fixed map.
-  - `migrations/001`: triggers, contacts, notes and money columns only. Migrations 002, 003, 005, 006, 007 were not read line by line.
-  - `seed.mjs`: searched for credentials and restricted documents. The restricted documents are generated loss runs, which `/documents/render` can't produce, so that route doesn't get around the restricted check.
-- **Not read line by line:** `lib/ref.ts`, `format.ts`, `time.ts`, `paging.ts`, `priority.ts`, `claims.ts`, `roadmap.ts`, `receipt-confirm.ts`, shared UI components other than those listed, test files, `uat/tests/**` specs, `uat/db-fingerprint.sh`, `review-guard-test.py`, `.claude/agents/security-reviewer.md` (this agent's own definition).
-- **Checks that found no problem:**
-  - **Image route:** Next's `/_next/image` is excluded from middleware, so I read the optimizer in `node_modules/next` (15.5.28). It fetches internal URLs through the router handler with a mocked request carrying no client headers. Middleware therefore still applies, and a forged identity header can't reach `/documents/*` this way. This comes from reading the code, not from a test.
-  - **"Working as" cookie:** `setUserAction` refuses when logins are configured or in production. With no logins, a production server returns 503 on non-public paths, and no public path calls `currentUser`.
-  - **Review reports:** both App Tests pages and the mockup route require administrator. Mockups are served under a CSP sandbox and their ids are strictly checked. The reports are baked into the Fly image by `fly-deploy.sh`, so anyone who can pull that image can read them.
-  - **Rendering:** no `dangerouslySetInnerHTML` exists, and `body_html` is stored but never rendered.
-  - **Exports and forms:** CSV cells are protected against formula injection. Filenames are safe in headers, and `next=` and `back=` values are restricted to local paths.
-- **Assumptions:** SEC-028 and SEC-030 rest on my understanding of how Mailgun and SendGrid fill their form fields. I confirmed neither against a real provider message.
-- **ID note:** SEC-033 is skipped, because source comments in `login-meta.ts` and `login-events.ts` already cite that number for earlier work.
-- **Not run:**
-  - Nothing was sent to any running app.
-  - None of the SEC-012 escapes were attempted.
-- **Guard:** the review guard refused one command, a file listing that included `cd ..`. I re-ran the listing with absolute paths. Nothing outside the snapshot was read.
-- **No committed credentials** were found in scope. The only hard-coded passwords and tokens are the documented local and UAT sandbox ones (`local-admin`, `uat-sb-*`, `local-inbound-token`, `local-cron-token`, `uat-sandbox-session-secret-…`).
+- **Read in full this run:**
+  - **Authentication and sessions:** `middleware.ts`, `basic-auth.ts`, `session.ts`, `session-state.ts`, `user.ts`, `permissions.ts`, `throttle.ts`, `http.ts`, `login-meta.ts`, `login-events.ts`, the sign-in action and page, sign-out, and the root `actions.ts`.
+  - **Public routes:** the quote page, `/api/leads`, `/api/cron/daily`, `/api/health`, `/api/inbound/email`.
+  - **New request-access flow:** the page, form, action, `access-requests.ts`, `access-request-store.ts`, and migration 010.
+  - **Email pipeline:** `email/parse.ts`, `email/ingest.ts`, `email/rules.ts`, `email/send.ts`.
+  - **AI:** `ai.ts`, `redact.ts`, and the new AI Assistant: `assistant.ts`, `assistant-tools.ts`, `assistant/ask/route.ts`, `chat.tsx`, `markdown.ts`, `components/markdown.tsx`, and migration 009.
+  - **Server actions:** inbox, policies, tasks, certificates, claims, documents, admin (the user section), clients, and the statement part of accounting.
+  - **Libraries:** `policies.ts`, `work.ts` (task transitions), `db.ts`, `instrumentation-node.ts`.
+  - **Route handlers:** documents and render, report CSV, GL export, client lookup, merge counts, `tasks/next`, mockups.
+  - **Pages:** `reports/users`, `admin/assistant`, `admin/app-tests/[agent]`.
+  - **Configuration and scripts:** `next.config.ts`, `Dockerfile`, `.dockerignore`, `fly.toml`, `.env.example`, `package.json`, `docker-compose.yml`, `.gitignore`, migration 008, `fly-deploy.sh`, `fly-users.sh`, `review-run.sh`, `review-guard.py`, `.claude/settings.json`.
+- **Checked by search only:**
+  - **Page permission gates:** every `page.tsx` was searched for `denied(` / `can(`.
+  - **Other server actions:** the remaining sales, accounting and admin actions were checked for `requirePerm` (all present).
+  - **PDFs and migrations:** `pdf.ts` was searched for PII columns, and the migrations for triggers and grants.
+- **Not re-read line by line this run:**
+  - The large pages (client, policy and task detail), `seed.mjs`, `accounting.ts`, `certificates.ts`, `automation.ts`, `reports.ts`, migrations 001–007.
+  - All of `uat/**`, `scripts/uat.sh`, `review-save.py`, `send-test-email.sh`, test files, and `.claude/agents/security-reviewer.md`.
+  - The previous run read these, and my fingerprinting showed changes concentrated in the areas above. Their earlier conclusions (CSV formula protection, `next=`/`back=` restrictions, no `dangerouslySetInnerHTML`, restricted documents) were not re-verified line by line.
+- **Next.js server actions on public paths:** I read Next 15.5.28's `action-handler.js` and `action-utils.js`.
+  - An action ID posted to a public page (such as `/request-access`) that isn't in that page's worker is forwarded by an internal HTTP fetch to the owning page's path.
+  - That fetch passes through middleware again, which requires a session. A protected action therefore cannot run as the default "working as" user through a public path.
+  - This comes from reading the code, not from a test.
+- **Assumptions:** SEC-028 and SEC-030 rest on Mailgun's and SendGrid's documented form fields. I did not confirm them against real provider posts.
+- **ID note:** SEC-033 remains skipped, because source comments already cite that number.
+- **Not run:** nothing was sent to any running app, and none of the SEC-012 escapes were attempted.
+- **Guard:** the guard refused no commands this run. Nothing outside the snapshot was read.
+- **No committed credentials** found in scope. The only hard-coded values are the documented local and sandbox ones (`local-admin`, `local-mrivera`, `local-inbound-token`, `local-cron-token`, the compose `ams:ams` database password). `ACCESS_REQUEST_TO` defaults to a hard-coded owner address in `access-requests.ts:6`; that is not a secret.

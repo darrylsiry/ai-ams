@@ -1,103 +1,140 @@
 # UAT report: siryous AMS
 
-Run: 2026-11-03 02:26 · code f58332c7 · live site https://siryous-ams.fly.dev
+Run: 2026-11-09 19:09 · code d7534221 · live site https://siryous-ams.fly.dev
 
 ## Verdict
-Yes, on everything this run could test: all 168 sandbox flows and the 17 canary tests passed, nothing in the data changed, and the live site passed its read-only pass with no failures. The gaps are on the live site, where the read-only `uat` login can't reach 8 pages or finish tasks and receipts, and in the canary crawl, which stopped at its 320-page cap.
+Mostly yes. All 182 sandbox flows passed, the live site passed its read-only checks, and no data changed during the canary pass. However, the overall run is FAIL because an intermittent React hydration error is back (UAT-F14). It failed the canary crawl on `/inbox?tab=all`. It also failed the first production crawl on `/claims?status=all&page=1`, which passed on the automatic retry.
 
 ## Summary
 | Pass | What it covers | Passed | Failed | Skipped | Result |
 |------|----------------|--------|--------|---------|--------|
-| Sandbox flows | every function end to end, writes included, on a disposable copy | 168 | 0 | 0 | PASS |
-| Canary | the read-only suite on the sandbox, data compared before and after | 17 | 0 | 0 | PASS |
-| Production | pages, downloads and API reads on the live site, writes blocked | 15 | 0 | 2 | PASS |
+| Sandbox flows | every function end to end, writes included, on a disposable copy | 182 | 0 | 0 | PASS |
+| Canary | the read-only suite on the sandbox, data compared before and after | 16 | 1 | 0 | FAIL |
+| Production | pages, downloads and API reads on the live site, writes blocked | 14 (+1 flaky, passed on retry) | 0 | 2 | PASS (flaky) |
 
 ## Production safety
-- **Writes stopped by the guard on the live site: 4, all from dry-run tests clicking a real button:**
+- **Writes stopped by the guard on the live site: 4.** Each came from a dry-run test clicking a real button:
   - POST `/certificates/new?client=162` (Issue certificate)
-  - POST `/clients/new` (Create client)
+  - POST `/clients/new` (Save client)
   - POST `/tasks/new` (Create task)
   - POST `/signout` (Sign out from the header)
-- **GETs the guard refused: 1.** It was `/admin/app-tests?_rsc=…` during the crawl, a Next link prefetch of a page no pass may open. Nothing was written, and no page tried to write just by being opened.
-- **Canary:** no table changed. `canary.diff` is empty, and the before and after fingerprints have 44 lines each.
-  - On the sandbox the guard stopped 6 dry-run writes and 1 refused GET to `/admin/app-tests`.
-- **Login used on production:** `uat`. Its role is `readonly`, so 8 pages showed the "no access" panel (see UAT-O3).
-- **Limit of this evidence:** the data comparison runs only on the sandbox.
-  - `scripts/uat.sh` lists page-view writes the guard can't stop: `users.last_active_at`, and the daily automation on the first page view of the day.
-  - The same could happen on the live site when this pass opens a page. I did not check whether it did.
+- **GETs the guard refused: 2.** Both were `/admin/app-tests?_rsc=…`, a link prefetch of a page no pass may open. There was one per crawl attempt, because the crawl ran twice on production (retry). Nothing was written, and no page tried to write just by being opened.
+- **Canary:** no table changed. `canary.diff` is empty, and the before and after fingerprints have 46 lines each.
+  - On the sandbox the guard stopped 6 dry-run writes: complete task, issue certificate, post receipt, save client, create task, sign out.
+  - It also refused 1 GET to `/admin/app-tests`.
+- **Login used on production:** `uat`. Its role is `readonly`, so 10 pages showed the "no access" panel (see UAT-O3).
+- **Limit of this evidence:**
+  - The data comparison runs only on the sandbox.
+  - Page-view writes the guard can't stop (`users.last_active_at`, and the daily automation on the first view of the day) could also happen on the live site. This pass cannot check that.
 
 ## Failures
-None.
+
+### UAT-F14 Pages intermittently throw a React hydration error (App defect)
+- **Where:**
+  - Canary: `/inbox?tab=all` on the sandbox.
+  - Production, first crawl attempt: `/claims?status=all&page=1`.
+- **What a user sees:**
+  - React logs "Minified React error #418 (HTML)": the HTML the server sent did not match what the browser rendered.
+  - React then throws away the server HTML and re-renders on the client. The page still shows, but it may flash or briefly show different content. The page shows nothing wrong in the browser.
+  - This failed before, then passed last run, and is back now.
+- **Evidence:**
+  - `uat/.work/crawl-canary.json` records the error on `/inbox?tab=all`, page error "Minified React error #418; …args[]=HTML&args[]=".
+  - In the same canary crawl, pages showing the same list passed: `/inbox?tab=all&scope=all`, `/inbox?scope=all&tab=all` and `/inbox?tab=all&page=1`. The admin's default scope is already "all".
+  - On production, `run-prod.log:35` shows the same error on `/claims?status=all&page=1`. The retry opened that same URL cleanly (`crawl-prod.json`, 0 problems).
+  - Screenshots, which show the last page crawled rather than the failing one: `uat/.work/artifacts-canary/03-crawl-crawl-every-reachable-page/test-failed-1.png` and `uat/.work/artifacts-prod/03-crawl-crawl-every-reachable-page/test-failed-1.png`.
+- **Likely cause:** not found.
+  - Both pages are server components and render dates only on the server (`inbox/page.tsx:69`, `whenShort`).
+  - I searched the client components (`components/shell.tsx`, `subnav.tsx`, `global-search.tsx`, `ask-box.tsx`). None of them reads `Date`, `toLocale*`, `Math.random` or `window` while rendering.
+  - The error moves between pages and does not repeat on identical URLs. That points to something time- or timing-dependent shared across pages, not to these two pages. `global-search.tsx:7` (`useSearchParams` in the shell) is a candidate worth checking.
+- **Suggested fix:**
+  - Reproduce with a development build, which prints the full message, including the element that differed.
+  - Have `watchPage` in `uat/tests/guard.ts` save `page.content()` and the console messages when a #418 appears. The report could then name the node.
+  - Note that the production retry (`playwright.config.ts:25`, `retries: isProd ? 1 : 0`) turns this into "flaky" with exit 0. A real intermittent defect can therefore pass the live run unnoticed.
 
 ## Observations
 
 ### UAT-O3 The production login can't see Accounting or user admin (Observation)
-- **Where:** production pass, `uat` login.
-- **What happens:** `web/migrations/004_review_fixes.sql:14` makes `uat` `readonly`, and `web/src/lib/permissions.ts:20` gives that role no permissions.
-  - **Pages not checked (8):** `/accounting`, `/inbox/simulate`, `/reports/renewals`, `/reports/users`, `/admin/audit`, `/admin/system`, and two `/admin/users/:id` pages.
-  - **Dry runs skipped (2):** "complete a task" ("no open task this login may finish") and "post a receipt" ("this login can't post receipts").
-  - **Accounting and agency reports:** their sub-pages were not reached either.
-- **Suggestion:** Give `readonly` the view permissions (`reports.all`, `accounting.view`) but no write permission, so the live pass covers those pages. Then check that the receipt form still renders for that role. The Done button needs a write-capable role, so that dry run would still skip.
+- **Where:** production pass, `uat` login (`readonly` role, `web/src/lib/permissions.ts:21` grants it nothing).
+- **What happens:**
+  - **Pages that showed the "no access" panel (10):** `/accounting`, `/inbox/simulate`, `/reports/renewals`, `/reports/users`, `/admin/users`, `/admin/audit`, `/admin/system`, `/admin/settings`, `/admin/carriers` and the new `/admin/assistant`.
+  - **Change since last run:** `/admin/settings` and `/admin/carriers` rendered for this login last time and now refuse it. That looks like a deliberate tightening, but it shrinks live coverage further.
+  - **Dry runs skipped (2):** "complete a task" and "post a receipt".
+- **Suggestion:** Give `readonly` the view permissions (`reports.all`, `accounting.view`) but no write permission, so the live pass covers those pages. Alternatively, add a production-only view role for `uat`.
 
 ### UAT-O6 The live site's build can't be confirmed (Observation)
 - **Where:** production pass.
-- **What happens:** `/api/live` returns only `{ ok: true }`, and `/api/health` returns no version. The report can't say whether the live site runs f58332c7 or an older build, so its pass does not prove this code is live.
-- **Suggestion:** Expose the build's commit on `/api/live` or `/api/health`, and have the prod pass record it.
+- **What happens:**
+  - `web/src/app/api/live/route.ts` still returns only `{ ok: true }`.
+  - The live site does serve `/assistant` and `/assistant/about`, so it is a recent build. I cannot say whether it is d7534221.
+- **Suggestion:** Expose the commit on `/api/live` or `/api/health`, and record it in the prod pass.
 
 ### UAT-O9 The canary crawl stopped at its 320-page cap (Observation)
 - **Where:** `uat/tests/readonly/03-crawl.spec.ts:14` and `:44`, canary pass.
-- **What happens:** The crawl opened exactly 320 pages, up from 230 last run, and the loop stops at `MAX_PAGES`. It still reports a pass.
-  - **Unknown remainder:** the crawl doesn't save its queue, so I can't say how many pages were never opened or whether any were new page shapes.
-  - **Where the cap went:** 86 of the 320 pages were pagination links, and the last 25 opened were mostly these.
-  - **Production:** its crawl ended at 200 pages, under the cap, because the `uat` login reaches fewer links.
-- **Suggestion:** Record the remaining queue length in `crawl-<pass>.json`, add a coverage note or failure when the cap is hit, and raise `UAT_MAX_PAGES`. Opening fewer page-number variants would also free up room.
+- **What happens:**
+  - The crawl opened exactly 320 pages again, across 223 page shapes, down from 240. The last page opened was a renewals pagination variant.
+  - **Unknown remainder:** the queue isn't saved, so I can't tell what was never opened.
+  - **Where the cap went:** many slots go to the same URL with its query keys in a different order, such as `/inbox?tab=all&scope=mine` and `/inbox?scope=mine&tab=all`. Others go to page-number variants (48 of them).
+  - **Production:** its crawl ended at 201 pages, under the cap.
+- **Suggestion:**
+  - Normalise the order of query keys in `clean()` before adding a URL to the queue.
+  - Record the length of the remaining queue in `crawl-<pass>.json`, and flag it when the cap is hit.
+  - Raise `UAT_MAX_PAGES`.
 
 ### UAT-O10 A read-only login is offered write forms the server should refuse (Observation)
 - **Where:** `/clients/new`, `/certificates/new` and `/tasks/new`, as the `uat` login on the live site.
-- **What happens:** All three forms rendered and their buttons sent a POST, which the guard stopped.
-  - `web/src/app/(app)/clients/new/page.tsx` has no permission check.
-  - The server actions do check: `clients/actions.ts:33` and `certificates/actions.ts:36` call `requirePerm("write")`, and `tasks/actions.ts:127` throws `Forbidden`.
-  - So this looks like a dead end for the user, not a security hole. No test submits these forms as a `readonly` user, so I read this from the source and did not see it run.
-- **Suggestion:** Show the role-refusal panel on these pages for logins without write rights, and add a sandbox flow that submits one as `readonly`.
+- **What happens:**
+  - All three forms rendered again, and their buttons sent a POST that the guard stopped.
+  - `web/src/app/(app)/clients/new/page.tsx` still has no permission check. The server actions refuse the save, so this is a dead end for the user, not a security hole.
+  - I read this from the source and did not see a refusal run.
+- **Suggestion:** Show the role-refusal panel on these pages for logins without `write`, and add a sandbox flow that submits one as `readonly`.
 
 ## Resolved since last run
-- **UAT-F14 — Pages intermittently throw a React hydration error** — now passes: no page errors on 200 live pages or 320 canary pages, and no `hydration-*.log` was written. This error came and went before, and I can't tell whether a code change fixed it, so one clean run does not prove it is gone.
-- **UAT-F27 — The live crawl hit a 502 and a 500 that were gone on retry** — now passes: every live page answered 200 on the first attempt, with no retries. This was also intermittent, so one clean run does not rule out a repeat.
-- **UAT-F28 — The "complete a task" dry run times out on production** — now passes as a skip: the loop now tries at most 10 tasks (`04-dry-run.spec.ts:25`), then skips. It did not click Done on production (see UAT-O3).
-- **UAT-O8 — Pages on the live site are slow** — now passes: the average page took 1.1 s against 4.6 s last run, and none took over 8 s against 18 before. The prod pass took 4.0 minutes against 26.8. The slowest pages, about 2.9 s, are the 8 refusal panels, and most of that is the crawl's 2-second wait for a heading they don't have.
+None. UAT-F14 was listed as resolved last run and has come back (see Failures).
 
 ## Coverage
-- **Sandbox:** 168 flows across 12 spec files, with writes included. The sandbox built from this snapshot and seeded 414 clients. The ledger balanced overall, per journal, and against open invoices.
-- **Canary:** 320 pages and 32 files, 240 page shapes between them, plus 6 dry-run writes caught. The crawl hit its cap (UAT-O9).
-  - **Files:** 18 report CSVs, 4 accounting exports, 8 rendered PDFs and 2 stored documents.
+- **Sandbox:** 182 flows across 14 spec files, with writes included.
+  - Two spec files are new since last run:
+    - `05-request-access` (4 flows): request form, validation, honeypot, flood limit, admin listing.
+    - `66-assistant` (10 flows): the AI Assistant with no API key, request refusals, each role's view, admin usage page, and the My Day layout on desktop and phone.
+  - The sandbox built from this snapshot and seeded 414 clients.
+- **Canary:**
+  - **Crawl:** 320 pages and 31 files, at the cap (UAT-O9).
+  - **Dry runs:** 6 writes caught.
+  - **Data:** no table changed.
 - **Production:**
-  - **Crawl:** 200 pages and 4 files, 138 page shapes between them. All pages answered 200, with no page errors.
+  - **Crawl:** 201 pages across 138 page shapes, from the retry attempt. Every page answered 200; the average page took 1.18 s and the slowest 3.1 s.
   - **Files:** 4 PDFs fetched and valid (2 rendered certificates and 2 stored documents).
-  - **Signed-out and API checks:** liveness, sign-in form, return-to redirect, API refusing no login and a wrong password, health behind the sign-in, the email webhook's GET, the quote form and the sign-out page.
-  - **Dry runs:** 4 caught (certificate, client, task, sign-out) and 2 skipped (complete a task, post a receipt).
+  - **Signed-out and API checks:** all passed (liveness, sign-in, return-to, API refusals, health, webhook GET, quote form, sign-out page).
+  - **Dry runs:** 4 caught and 2 skipped (UAT-O3).
 - **Not covered:**
-  - On production: CSV downloads and accounting exports, which the guard refuses there because they can write, plus the areas in UAT-O3.
-  - Real SMTP sending and paths that call the AI were not identified in any result this run, so treat them as untested.
-  - `/admin/app-tests`, which no pass opens by design.
+  - **On production:**
+    - CSV and accounting exports (the guard refuses them because they can write).
+    - The 10 refused pages (UAT-O3).
+    - `/request-access`: the crawl skips links from `/signin`, and no public check opens it.
+  - **Real SMTP sending and real AI calls:** the sandbox has neither SMTP_URL nor an API key, by design.
+  - **`/admin/app-tests`:** no pass opens it, by design.
 - **Limits on my side:**
-  - The review guard stopped a Docker status check, so sandbox removal rests on the harness's own summary line.
-  - The guard also stopped me reading the background task's output file, so I used `uat/.work/` instead, which has the same results.
-  - I did not recheck the live site outside the harness.
+  - I did not rerun the canary to recheck UAT-F14. The production retry and the identical inbox URLs that passed are the evidence that it is intermittent.
+  - The review guard refused some of my shell commands, such as writing a log file and jq paths containing `..`. I worked from `uat/.work/` instead.
+  - Sandbox removal rests on the harness's own summary line.
 
 ## Functions checked
 | Area | Function | Sandbox | Production |
 |------|----------|---------|------------|
 | System | liveness, health with the database up | PASS | PASS |
-| API security | no-login refusal, wrong password refused, GET-only clients, cron token | PASS | PASS (no cron check on production) |
-| Sign-in | sign-in form, return-to redirect, sign-out page, header sign-out | PASS | PASS (header sign-out caught by the guard) |
-| My Day and tasks | queue, complete, reassign, create task | PASS | pages PASS; create caught by the guard; complete skipped (O3) |
+| API security | no-login refusal, wrong password refused, GET-only clients, cron token | PASS | PASS (no cron check) |
+| Sign-in | sign-in form, return-to, sign-out page, header sign-out | PASS | PASS (header sign-out caught by the guard) |
+| Request access | request form, validation, honeypot, flood limit, admin list | PASS | not covered |
+| My Day and tasks | queue, complete, reassign, create, layout | PASS | pages PASS; create caught by the guard; complete skipped (O3) |
 | Email intake | webhook, senders, rules, forwards, inbox | PASS | webhook GET and inbox pages PASS; simulate refused for `uat` (O3) |
 | Clients | create, edit, duplicates, tabs | PASS | pages PASS; create caught by the guard |
 | Policies | new, direct-bill, cancel, pending non-pay, reinstate | PASS | pages PASS; no writes tried |
-| Renewals | renew a policy, renewal tab | PASS | pages PASS; no writes tried |
-| Sales | quote form, pipeline, opportunity | PASS | quote form and pages PASS; no writes tried |
-| Certificates and claims | issue, supersede, revoke, PDF, claims | PASS | pages PASS; PDFs valid; issue caught by the guard |
-| Accounting | receipts, statements, credits, export, ledger balance | PASS | not covered: `uat` refused, receipt dry run skipped (O3) |
-| Reports | reports and CSV exports | PASS | `/reports` PASS; two reports refused for `uat` (O3); CSVs refused by the guard |
-| Admin | users, sign-ins, audit, settings, new user | PASS | settings, carriers and roadmap PASS; users detail, audit and system refused for `uat` (O3) |
-| Read-only safety | canary fingerprint, guard | PASS (no table changed) | 4 writes caught, 1 refused GET, no write when a page was only opened |
+| Renewals | renew a policy, renewal tab | PASS | pages PASS |
+| Sales | quote form, pipeline, opportunity | PASS | PASS |
+| Certificates and claims | issue, supersede, revoke, PDF, claims | PASS (canary crawl hit F14 on inbox, not here) | PDFs valid; issue caught by the guard; `/claims` list hit F14 once, passed on retry |
+| AI Assistant | off-without-key message, request refusals, each role's view, admin usage | PASS | `/assistant` and `/assistant/about` PASS; `/admin/assistant` refused for `uat` |
+| Accounting | receipts, statements, credits, export, ledger balance | PASS | not covered (O3) |
+| Reports | reports and CSV exports | PASS | `/reports` PASS; renewals and users reports refused (O3); CSVs refused by the guard |
+| Admin | users, sign-ins, audit, settings, new user | PASS | all admin sub-pages refused for `uat` (O3) |
+| Read-only safety | canary fingerprint, guard | PASS (no table changed) | 4 writes caught, 2 refused GETs, no write when a page was only opened |
+| Page integrity | no page errors while crawling | FAIL (F14 on `/inbox?tab=all`) | flaky (F14 on `/claims?status=all&page=1`, clean on retry) |
