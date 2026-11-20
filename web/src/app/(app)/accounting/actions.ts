@@ -215,6 +215,6 @@ export async function applyCreditAction(f: FormData) {
 export async function refundAction(f: FormData) {
   const u = await requirePerm("accounting");
   const back = safeLocalPath(String(f.get("back") || "/accounting/invoices?status=refunds"));
-  await guard(back, () => refundInvoice(Number(f.get("invoice_id")), String(f.get("method") || "check"), String(f.get("reference") || "") || null, u));
+  await guard(back, () => refundInvoice(Number(f.get("invoice_id")), String(f.get("method") || "check"), String(f.get("reference") || "") || null, u, undefined, f.get("owed_ack") ? Number(f.get("owed_ack")) : null));
   go(back, "msg", "Refund paid from trust");
 }

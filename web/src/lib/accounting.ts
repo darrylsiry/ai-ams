@@ -120,6 +120,15 @@ export async function invoiceBalance(invoiceId: number, on: Queryable = db): Pro
   return Number(r?.bal ?? 0);
 }
 
+/** What a client still owes on open agency-bill invoices, credits not netted. */
+export async function clientOwed(clientId: number, on: Queryable = db): Promise<number> {
+  const r = await one<{ owed: string }>(
+    `SELECT coalesce(sum(i.total - coalesce((SELECT sum(ra.amount) FROM receipt_applications ra JOIN receipts r ON r.id = ra.receipt_id
+                                             WHERE ra.invoice_id = i.id AND r.status = 'finalized'),0)),0)::text AS owed
+       FROM invoices i WHERE i.client_id = $1 AND i.status IN ('open','partial') AND i.total > 0`, [clientId], on);
+  return round(Number(r?.owed ?? 0));
+}
+
 async function refreshInvoiceStatus(invoiceId: number, on: Queryable) {
   const bal = await invoiceBalance(invoiceId, on);
   const inv = await one<{ total: string; status: string }>("SELECT total, status FROM invoices WHERE id = $1", [invoiceId], on);
@@ -195,11 +204,20 @@ export async function createReceipt(
   return on ? run(on) : tx(run);
 }
 
-/** Client refund (CSH-17): pay a credit balance (return premium) from trust by check or ACH. */
-export async function refundInvoice(invoiceId: number, method: string, reference: string | null, user: Pick<User, "id" | "username">, on?: Queryable) {
+/**
+ * Client refund (CSH-17): pay a credit balance (return premium) from trust by check or ACH. Only an open
+ * credit can be refunded (CR-053). While the client still owes on open invoices the credit should usually
+ * be applied instead, so the refund then needs `owedAck`: the amount owed that the person refunding was
+ * shown, which must still be what is owed.
+ */
+export async function refundInvoice(invoiceId: number, method: string, reference: string | null, user: Pick<User, "id" | "username">, on?: Queryable, owedAck?: number | null) {
   const run = async (c: Queryable) => {
-    const inv = await one<{ id: number; client_id: number; policy_id: number | null; invoice_number: string; total: string }>("SELECT * FROM invoices WHERE id = $1 FOR UPDATE", [invoiceId], c);
+    const inv = await one<{ id: number; client_id: number; policy_id: number | null; invoice_number: string; total: string; status: string }>("SELECT * FROM invoices WHERE id = $1 FOR UPDATE", [invoiceId], c);
     if (!inv || Number(inv.total) >= 0) throw new Error("Only a credit can be refunded.");
+    if (inv.status !== "open") throw new Error(inv.status === "void" ? "This credit was voided, so there is nothing to refund." : "This credit has already been refunded.");
+    const owed = await clientOwed(inv.client_id, c);
+    if (owed > 0.004 && (owedAck == null || !Number.isFinite(owedAck) || Math.abs(owedAck - owed) > 0.004))
+      throw new Error(`This client still owes $${owed.toFixed(2)} on open invoices. Apply the credit to them, or refund again to confirm.`);
     const bal = await invoiceBalance(invoiceId, c);
     if (bal >= -0.004) throw new Error("This credit has already been refunded.");
     const amount = round(-bal);
@@ -212,7 +230,7 @@ export async function refundInvoice(invoiceId: number, method: string, reference
     await refreshInvoiceStatus(invoiceId, c);
     await post({ date, memo: `Refund ${number} for ${inv.invoice_number}`, refType: "receipt", refId: r!.id, clientId: inv.client_id, policyId: inv.policy_id },
       [{ account: "premium_receivable", debit: amount }, { account: "trust_cash", credit: amount }], c);
-    await audit({ actor: user.username, action: "refund.paid", entityType: "invoice", entityId: invoiceId, summary: `Refunded $${amount.toFixed(2)} (${method}${reference ? ` ${reference}` : ""})` }, c);
+    await audit({ actor: user.username, action: "refund.paid", entityType: "invoice", entityId: invoiceId, summary: `Refunded $${amount.toFixed(2)} (${method}${reference ? ` ${reference}` : ""})${owed > 0.004 ? `, confirmed while $${owed.toFixed(2)} was owed` : ""}` }, c);
   };
   await (on ? run(on) : tx(run));
 }

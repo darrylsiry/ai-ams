@@ -1,4 +1,5 @@
 import { audit } from "./audit";
+import { purgeOldAccessRequests } from "./access-request-store";
 import { flagCertificates } from "./certificates";
 import { db, one, q, tx, type Queryable } from "./db";
 import { addDays, todayISO } from "./format";
@@ -127,6 +128,9 @@ export async function runDailyAutomation(today = todayISO()): Promise<Automation
     add("Claim follow-ups", await createActivity({ code: "CLAIM-FU", subject: `Claim ${s.claim_number} status check: ${s.client}`, ownerId: s.owner, clientId: s.client_id,
       policyId: s.policy_id, claimId: s.id, source: "automation", autoKey: `claimfu:${s.id}:${week}`, actor }));
   }
+
+  // 9. Requests for a login past their retention period.
+  await purgeOldAccessRequests();
 
   const result: AutomationResult = { ranOn: today, created, expired: exp.rowCount ?? 0, cancelled };
   await db.query(`INSERT INTO settings (key, value) VALUES ('automation_last_run', $1), ('automation_last_result', $2)

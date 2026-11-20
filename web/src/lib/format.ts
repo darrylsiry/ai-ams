@@ -33,3 +33,8 @@ export function isoDate(v: unknown): string {
 export const titleCase = (s: string) => s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 export const plural = (n: number, w: string, p = `${w}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? w : p}`;
 export const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]!.toUpperCase()).join("");
+/** The question before a refund from trust; it says so when the client still owes on open invoices (CR-053). */
+export const refundConfirm = (amount: number, client: string, owed = 0) =>
+  `Refund ${money(amount, true)} to ${client} from trust?${owed > 0 ? `\n\nThey still owe ${money(owed, true)} on open invoices. Applying the credit to those is usually right; refund only if they asked for the money back.` : ""}`;
+/** Text for a LIKE or ILIKE pattern, matched literally: escapes the wildcards and the escape character. */
+export const likeEscape = (s: string) => s.replace(/[%_\\]/g, "\\$&");

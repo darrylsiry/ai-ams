@@ -138,3 +138,16 @@ test("the audit search doesn't repeat what the record itself withholds", async (
     assert.doesNotMatch(r.content, /SECRET/);
   });
 });
+
+test("CR-071: part of a name with an underscore or percent sign matches it literally", async (t) => {
+  if (!up) return t.skip("no database");
+  await rolledBack(async (c) => {
+    const tag = crypto.randomUUID().slice(0, 8);
+    await c.query("INSERT INTO users (username, full_name, email, role, inbox_alias) VALUES ($1, $2, $3, 'csr', $1)", [`cr071${tag}`, `Pat_Lee 100% ${tag}`, `cr071-${tag}@example.test`]);
+    for (const ref of ["t_L", "100%"]) {
+      const r = await call("work_queue", { person: ref }, ctxOf("admin", c));
+      assert.equal(r.json.person, `Pat_Lee 100% ${tag}`, `${ref}: ${r.content.slice(0, 120)}`);
+    }
+    assert.match((await call("work_queue", { person: "t%L" }, ctxOf("admin", c))).content, /No one called/);
+  });
+});

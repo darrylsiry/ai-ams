@@ -121,7 +121,7 @@ trap sandbox_down EXIT
 
 run_suite() {   # name mode base user pass [extra playwright args]
   local name=$1 mode=$2 base=$3 user=$4 pass=$5; shift 5
-  rm -f "$WORK/blocked-$name.jsonl" "$WORK/hydration-$name.log"; rm -rf "$WORK/artifacts-$name"
+  rm -f "$WORK/blocked-$name.jsonl" "$WORK/hydration-$name.log"; rm -rf "$WORK/artifacts-$name" "$WORK/hydration-$name"
   (cd uat && UAT_ROOT="$ROOT" UAT_PASS_NAME="$name" UAT_MODE="$mode" UAT_BASE_URL="$base" UAT_USER="$user" UAT_PASS="$pass" npx playwright test "$@") > "$WORK/run-$name.log" 2>&1
   local rc=$?
   # A password must never reach a log, however a tool chose to print it.
@@ -132,6 +132,7 @@ run_suite() {   # name mode base user pass [extra playwright args]
   note "- $name: ${line:-no result line} (exit $rc; log $WORK/run-$name.log)"
   [ -s "$WORK/blocked-$name.jsonl" ] && note "  stopped by the guard: $(grep -vc '"method":"GET"' "$WORK/blocked-$name.jsonl" | tr -d ' ') writes, $(grep -c '"method":"GET"' "$WORK/blocked-$name.jsonl" | tr -d ' ') refused GETs (see $WORK/blocked-$name.jsonl)"
   [ -s "$WORK/hydration-$name.log" ] && note "  React hydration errors noted during the flows: $(wc -l < "$WORK/hydration-$name.log" | tr -d ' ') (see $WORK/hydration-$name.log)"
+  [ -d "$WORK/hydration-$name" ] && note "  React hydration errors captured (server HTML, page and console): $(ls "$WORK/hydration-$name" | grep -c info.json) in $WORK/hydration-$name"
   return $rc
 }
 

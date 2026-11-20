@@ -31,7 +31,10 @@ test("the throttle: a few an hour from one network; past the day's emails a requ
   const limited = admission(ip, { addressesLastHour: from(3), emailsLastDay: 3 });
   assert.match(limited.refused ?? "", /last hour/);
   assert.equal(limited.email, false);
-  assert.deepEqual(admission(ip, { addressesLastHour: from(40, "198.51.100.1"), emailsLastDay: 2 }), { refused: null, email: true }, "another sender doesn't count against this one");
+  assert.deepEqual(admission(ip, { addressesLastHour: from(LIMITS.perHour - 1, "198.51.100.1"), emailsLastDay: 2 }), { refused: null, email: true }, "another sender doesn't count against this one");
+  const many = Array.from({ length: LIMITS.perHour }, (_, i) => `198.51.${i}.7`);
+  assert.match(admission(ip, { addressesLastHour: many, emailsLastDay: 0 }).refused ?? "", /more requests than usual/, "SEC-038: a cap across every network");
+  assert.equal(admission(ip, { addressesLastHour: many.slice(1), emailsLastDay: 0 }).refused, null);
   assert.deepEqual(admission(ip, { addressesLastHour: [], emailsLastDay: LIMITS.emailsPerDay }), { refused: null, email: false }, "one sender filling the cap can't turn a real person away");
 });
 
@@ -54,10 +57,11 @@ test("the owner's email: to the owner, reply goes to the person asking, everythi
   assert.equal(mail.to, ACCESS_REQUEST_TO);
   assert.equal(ACCESS_REQUEST_TO, "darryl@siryous.com");
   assert.deepEqual(mail.replyTo, { name: "Pat Lee", address: "pat@agency.example.com" });
-  assert.equal(mail.subject, "Access request: Pat Lee (Broker & Co)");
+  assert.equal(mail.subject, "Access request from the siryous AMS sign-in page", "SEC-038: nothing typed goes in the subject");
+  assert.match(mail.text, /^Someone asked[^\n]*\n\nNot verified: everything below was typed by a visitor/);
   for (const s of ["Name:     Pat Lee", "Email:    pat@agency.example.com", "Company:  Broker & Co", "Address:  203.0.113.9", "https://siryous-ams.fly.dev/request-access", "https://siryous-ams.fly.dev/reports/users", "scripts/fly-users.sh"]) assert.ok(mail.text.includes(s), s);
   const bare = accessRequestEmail({ name: "Pat", email: "p@x.com", company: "", at: new Date(), ip: null, origin: "http://localhost:3200" }, "ops@example.test");
-  assert.equal(bare.subject, "Access request: Pat");
+  assert.ok(!bare.subject.includes("Pat"));
   assert.equal(bare.to, "ops@example.test");
   assert.ok(bare.text.includes("Company:  (not given)") && bare.text.includes("Address:  not recorded"));
 });

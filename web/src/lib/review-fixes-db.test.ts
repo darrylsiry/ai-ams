@@ -4,7 +4,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import type { PoolClient } from "pg";
-import { applyCredit, balances, buildProducerStatement, createInvoice, createReceipt, findTermForLine, invoiceBalance, invoiceLinesFor, matchCommissionLines, payCarrierStatement, refundInvoice, reverseReceipt, sweepable, voidCredit } from "./accounting";
+import { applyCredit, balances, buildProducerStatement, clientOwed, createInvoice, createReceipt, findTermForLine, invoiceBalance, invoiceLinesFor, matchCommissionLines, payCarrierStatement, refundInvoice, reverseReceipt, sweepable, voidCredit } from "./accounting";
 import { pastDueInvoices } from "./automation";
 import { issueCertificate, policiesNotInForce } from "./certificates";
 import { db, one, q } from "./db";
@@ -339,7 +339,7 @@ test("CR-045: voiding a refund posts no negative lines and opens the credit agai
     const me = { ...ME, id: p.producerId };
     const credit = await createInvoice({ clientId: p.clientId, policyId: p.id, lines: await invoiceLinesFor(p.id, -500, c) }, "test", c);
     const before = await balances(undefined, c);
-    await refundInvoice(credit, "check", "T-1", me, c);
+    await refundInvoice(credit, "check", "T-1", me, c, await clientOwed(p.clientId, c));
     const refund = (await one<{ id: number }>("SELECT receipt_id AS id FROM receipt_applications WHERE invoice_id = $1", [credit], c))!.id;
     assert.deepEqual(await reverseReceipt(refund, "", ME, c), { refund: true });
     const lines = (await q<{ debit: string; credit: string }>("SELECT debit, credit FROM ledger_entries WHERE ref_type = 'receipt' AND ref_id = $1", [refund], c));
@@ -396,5 +396,30 @@ test("UX-001: a non-pay notice can't be recorded as cancelled before its date, a
     await c.query("UPDATE policies SET cancel_date = current_date WHERE id = $1", [p.id]);
     await confirmNonpayCancellation(p.id, ME, c);
     assert.equal(await status(), "cancelled");
+  });
+});
+
+test("CR-053: a voided credit can't be refunded, and a refund while the client owes needs the owed amount confirmed", async (t) => {
+  if (!up) return t.skip("no database");
+  await rolledBack(async (c) => {
+    const p = await newPolicy(c);
+    const me = { ...ME, id: p.producerId };
+    const trust = async () => Number((await one<{ v: string }>("SELECT coalesce(sum(debit - credit),0)::text AS v FROM ledger_entries WHERE account = 'trust_cash'", [], c))!.v);
+    const voided = await createInvoice({ clientId: p.clientId, policyId: p.id, lines: await invoiceLinesFor(p.id, -200, c) }, "test", c);
+    assert.ok(await voidCredit(voided, "test", "test", c));
+    const before = await trust();
+    await assert.rejects(refundInvoice(voided, "check", null, me, c, await clientOwed(p.clientId, c)), /voided/);
+    assert.equal(await trust(), before);
+
+    await createInvoice({ clientId: p.clientId, policyId: p.id, lines: await invoiceLinesFor(p.id, 1000, c) }, "test", c);
+    const owed = await clientOwed(p.clientId, c);
+    assert.ok(owed >= 1000, `owed ${owed}`);
+    const credit = await createInvoice({ clientId: p.clientId, policyId: p.id, lines: await invoiceLinesFor(p.id, -500, c) }, "test", c);
+    await assert.rejects(refundInvoice(credit, "check", null, me, c), /still owes/);
+    await assert.rejects(refundInvoice(credit, "check", null, me, c, owed - 100), /still owes/, "a stale amount is refused");
+    assert.equal(await trust(), before);
+    await refundInvoice(credit, "check", null, me, c, owed);
+    assert.ok(Math.abs(await trust() - (before - 500)) < 0.005);
+    await assert.rejects(refundInvoice(credit, "check", null, me, c, owed), /already been refunded/);
   });
 });

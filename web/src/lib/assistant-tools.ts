@@ -10,7 +10,7 @@ import { carrierPayables, sweepable } from "./accounting";
 import { untrusted } from "./ai";
 import { policiesNotInForce, replacementOf } from "./certificates";
 import { one, q, type Queryable } from "./db";
-import { addDays } from "./format";
+import { addDays, likeEscape } from "./format";
 import { can, type Permission } from "./permissions";
 import { scoreTask } from "./priority";
 import { myProductionBy, myProductionMonthly, myStatementLines, myStatements } from "./producer-reports";
@@ -65,7 +65,7 @@ async function findUser(ref: string, ctx: AssistantContext) {
   if (!ref) return null;
   const exact = await one<{ id: number; full_name: string }>("SELECT id, full_name FROM users WHERE lower(username) = lower($1) OR lower(full_name) = lower($1) ORDER BY active DESC, id LIMIT 1", [ref], ctx.on);
   if (exact) return exact;
-  const some = await q<{ id: number; full_name: string }>("SELECT id, full_name FROM users WHERE active AND full_name ILIKE '%' || $1 || '%' ORDER BY id LIMIT 5", [ref.replace(/[%_\\\\]/g, "\\\\$&")], ctx.on);
+  const some = await q<{ id: number; full_name: string }>("SELECT id, full_name FROM users WHERE active AND full_name ILIKE '%' || $1 || '%' ORDER BY id LIMIT 5", [likeEscape(ref)], ctx.on);
   if (some.length > 1) throw new ToolMessage(`"${ref}" could be ${some.map((u) => u.full_name).join(" or ")}. Use the full name, or ask which they mean.`);
   return some[0] ?? null;
 }

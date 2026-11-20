@@ -1,9 +1,9 @@
 import { db, q, type Queryable } from "./db";
-import { admission, DAILY_MAIL_CAP, type AccessRequestInput } from "./access-requests";
+import { admission, DAILY_MAIL_CAP, LIMITS, type AccessRequestInput } from "./access-requests";
 import type { NoticeResult } from "./email/send";
 
-// access_requests: every request from the sign-in page, kept whether or not the email went out, and the
-// throttle's check, made in one step with the insert.
+// access_requests: every request from the sign-in page, kept whether or not the email went out (for
+// LIMITS.retentionDays), and the throttle's check, made in one step with the insert.
 
 export type AccessRequestRow = AccessRequestInput & { id: number; created_at: Date; ip: string | null; emailed_at: Date | null; email_error: string | null };
 
@@ -49,7 +49,20 @@ export async function recordEmailResult(id: number, result: NoticeResult, on: Qu
   else await on.query("UPDATE access_requests SET email_error = $2 WHERE id = $1", [id, result.reason]);
 }
 
-export async function listAccessRequests(limit = 50, on: Queryable = db): Promise<AccessRequestRow[]> {
-  const rows = await q<AccessRequestRow>("SELECT id, created_at, name, email, company, ip, emailed_at, email_error FROM access_requests ORDER BY created_at DESC, id DESC LIMIT $1", [limit], on);
+/** One page of requests, newest first. */
+export async function listAccessRequests(limit = 50, offset = 0, on: Queryable = db): Promise<AccessRequestRow[]> {
+  const rows = await q<AccessRequestRow>("SELECT id, created_at, name, email, company, ip, emailed_at, email_error FROM access_requests ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2", [limit, offset], on);
   return rows.map((r) => ({ ...r, id: Number(r.id) }));
+}
+
+/** How many requests are on file, and how many of them never reached the owner's inbox. */
+export async function countAccessRequests(on: Queryable = db): Promise<{ total: number; notEmailed: number }> {
+  const { rows: [r] } = await on.query<{ total: number; not_emailed: number }>("SELECT count(*)::int AS total, count(*) FILTER (WHERE emailed_at IS NULL)::int AS not_emailed FROM access_requests");
+  return { total: r.total, notEmailed: r.not_emailed };
+}
+
+/** Delete requests older than the retention period (SEC-038); the daily run calls this. */
+export async function purgeOldAccessRequests(on: Queryable = db): Promise<number> {
+  const r = await on.query("DELETE FROM access_requests WHERE created_at < now() - make_interval(days => $1)", [LIMITS.retentionDays]);
+  return r.rowCount ?? 0;
 }

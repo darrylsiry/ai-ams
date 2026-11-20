@@ -14,7 +14,7 @@ import { TaskLine } from "@/components/tasks";
 import { Card, Empty, Field, Flash, KV, PageHeader, Pill, Stat, Status, Table, Tabs, cls } from "@/components/ui";
 import { aiEnabled } from "@/lib/ai";
 import { one, q } from "@/lib/db";
-import { daysBetween, money, todayISO, whenDate, whenShort } from "@/lib/format";
+import { daysBetween, money, refundConfirm, todayISO, whenDate, whenShort } from "@/lib/format";
 import { HIDDEN, itemDetails } from "@/lib/redact";
 import { DOC_FOLDERS, lobLabel, POLICY_STATUS_LABEL } from "@/lib/ref";
 import { can, currentUser } from "@/lib/user";
@@ -359,6 +359,7 @@ async function BillingTab({ clientId, clientName, canPost }: { clientId: number;
   const today = todayISO();
   const balance = (i: { total: string; paid: string }) => Number(i.total) - Number(i.paid);
   const credits = invoices.filter((i) => i.status === "open" && balance(i) < 0), debits = invoices.filter((i) => ["open", "partial"].includes(i.status) && balance(i) > 0);
+  const owed = Math.round(debits.reduce((t, i) => t + balance(i), 0) * 100) / 100;
   return (
     <div className="space-y-5">
       {canPost && credits.length > 0 && debits.length > 0 && (
@@ -379,7 +380,7 @@ async function BillingTab({ clientId, clientName, canPost }: { clientId: number;
             <td className={`${cls.td} font-mono text-xs`}>{i.policy_number ?? "—"}</td><td className={`${cls.td} text-xs`}>{i.issue_date}</td>
             <td className={`${cls.td} text-xs ${bal > 0 && i.due_date < today ? "font-medium text-rose-600" : ""}`}>{i.due_date}</td>
             <td className={cls.num}>{money(i.total, true)}</td><td className={cls.num}>{money(bal, true)}</td><td className={cls.td}><Status s={i.status} /></td>
-            <td className={`${cls.td} text-right`}>{bal < 0 && i.status === "open" && canPost ? <form action={refundAction} className="flex justify-end gap-1"><input type="hidden" name="invoice_id" value={i.id} /><input type="hidden" name="back" value={`/clients/${clientId}?tab=billing`} /><Submit className={cls.btnSm} confirm={`Refund ${money(-bal, true)} to ${clientName} from trust?`}>Refund {money(-bal, true)}</Submit></form> : <a href={`/documents/render?kind=invoice&invoice=${i.id}`} className={cls.btnSm}>PDF</a>}</td>
+            <td className={`${cls.td} text-right`}>{bal < 0 && i.status === "open" && canPost ? <form action={refundAction} className="flex justify-end gap-1"><input type="hidden" name="invoice_id" value={i.id} /><input type="hidden" name="back" value={`/clients/${clientId}?tab=billing`} />{owed > 0 && <input type="hidden" name="owed_ack" value={owed.toFixed(2)} />}<Submit className={cls.btnSm} confirm={refundConfirm(-bal, clientName, owed)}>Refund {money(-bal, true)}</Submit></form> : <a href={`/documents/render?kind=invoice&invoice=${i.id}`} className={cls.btnSm}>PDF</a>}</td>
           </tr>; })}
         </Table>
       </Card>

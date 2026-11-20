@@ -127,9 +127,50 @@ export const test = base.extend<{ blocked: Blocked[]; api: SafeApi; anon: SafeAp
 
 export { expect };
 
-/** Collect page errors and 5xx responses from this page from now on. */
+const HYDRATION = /Minified React error #41[89]|Hydration failed|hydration mismatch/i;
+let hydrationSeq = 0;
+
+/**
+ * UAT-F14: React #418 comes and goes, and the production build's message names no element. When it
+ * appears, keep what's needed to find the node: the HTML the server sent, the page as the browser ended
+ * up, and the recent console. Written to .work/hydration-<pass>/<n>-{server.html,dom.html,info.json}.
+ * The live login's Authorization header is never written; the pages hold only what the login could see.
+ */
+function captureHydration(page: Page, message: string, serverHtml: Promise<string> | null, consoleTail: string[]) {
+  const url = page.url();
+  const dom = page.content().catch(() => "(not available)");   // asked for at once, before the test moves on
+  const dir = `.work/hydration-${process.env.UAT_PASS_NAME ?? "readonly"}`;
+  const n = String(++hydrationSeq).padStart(3, "0");
+  void (async () => {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(`${dir}/${n}-info.json`, JSON.stringify({ at: new Date().toISOString(), url, message, console: consoleTail }, null, 1));
+      fs.writeFileSync(`${dir}/${n}-dom.html`, await dom);
+      fs.writeFileSync(`${dir}/${n}-server.html`, (await serverHtml?.catch(() => "")) || "(not available)");
+    } catch { /* evidence is best effort; the failure itself is still reported */ }
+  })();
+}
+
+const captured = new WeakSet<Page>();
+
+/** Once per tab, however often watchPage is called on it: keep the latest server HTML and console, capture on a hydration error. */
+function watchHydration(page: Page) {
+  if (captured.has(page)) return;
+  captured.add(page);
+  const consoleTail: string[] = [];
+  let serverHtml: Promise<string> | null = null;
+  page.on("console", (m) => { consoleTail.push(`${m.type()}: ${m.text().slice(0, 2000)}`); if (consoleTail.length > 30) consoleTail.shift(); });
+  page.on("response", (r) => {
+    const req = r.request();
+    if (req.isNavigationRequest() && req.resourceType() === "document" && req.frame() === page.mainFrame()) serverHtml = r.text();
+  });
+  page.on("pageerror", (e) => { if (HYDRATION.test(e.message)) captureHydration(page, e.message, serverHtml, [...consoleTail]); });
+}
+
+/** Collect page errors and 5xx responses from this page from now on; a hydration error is also captured. */
 export function watchPage(page: Page): string[] {
   const problems: string[] = [];
+  watchHydration(page);
   page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
   page.on("response", (r) => { if (r.status() >= 500) problems.push(`HTTP ${r.status()} ${r.url()}`); });
   return problems;
